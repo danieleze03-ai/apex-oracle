@@ -1,0 +1,53 @@
+# ⚡ APEX ORACLE - AO-1.0
+# All dependencies for the bot
+# Install with: pip install -r requirements.txt
+
+# ─── BROKER CONNECTION ───────────────────────────
+iqoptionapi==4.0.0              # IQ Option WebSocket API
+
+# ─── TECHNICAL ANALYSIS ──────────────────────────
+pandas==2.1.4                   # Data manipulation
+pandas-ta==0.3.14b              # Technical indicators (RSI, MACD, EMA, BB, ATR)
+numpy==1.26.2                   # Numerical computing
+
+# ─── AI BRAIN ────────────────────────────────────
+groq==0.4.2                     # Groq AI API (FREE tier)
+
+# ─── SENTIMENT ANALYSIS ──────────────────────────
+textblob==0.17.1                # Sentiment analysis
+nltk==3.8.1                     # Natural language toolkit
+requests==2.31.0                # HTTP requests for news scraping
+beautifulsoup4==4.12.2          # HTML scraping (Forex Factory)
+lxml==4.9.3                     # HTML parser
+
+# ─── DATABASE ────────────────────────────────────
+supabase==2.3.0                 # Supabase FREE database
+
+# ─── TELEGRAM BOT ────────────────────────────────
+python-telegram-bot==20.7       # Telegram command center
+
+# ─── PRICE VERIFICATION ──────────────────────────
+yfinance==0.2.35                # Yahoo Finance price feed
+
+# ─── WEB SERVER (Keep Alive for Render) ──────────
+flask==3.0.0                    # Mini server to keep Render awake
+
+# ─── SCHEDULING ──────────────────────────────────
+APScheduler==3.10.4             # Task scheduler (sessions, evolution)
+pytz==2023.3                    # Timezone management (WAT support)
+
+# ─── UTILITIES ───────────────────────────────────
+python-dotenv==1.0.0            # Load .env variables locally
+loguru==0.7.2                   # Beautiful logging
+colorama==0.4.6                 # Colored terminal output
+aiohttp==3.9.1                  # Async HTTP client
+asyncio==3.4.3                  # Async support
+
+# ─── DATA BACKUP ─────────────────────────────────
+google-auth==2.25.2             # Google Drive auth
+google-auth-oauthlib==1.2.0     # OAuth for Google
+google-api-python-client==2.111.0 # Google Drive API
+
+# ─── CHARTS (sent to Telegram) ───────────────────
+matplotlib==3.8.2               # Chart generation
+Pillow==10.1.0                  # Image processing

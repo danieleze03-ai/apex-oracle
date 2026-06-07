@@ -1,0 +1,45 @@
+# ⚡ APEX ORACLE — Git Ignore
+# Protects secrets and unnecessary files
+
+# ─── SECRETS (NEVER COMMIT THESE) ───────────────
+.env
+*.env
+secrets.json
+credentials.json
+token.json
+
+# ─── PYTHON ──────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+
+# ─── LOGS ────────────────────────────────────────
+logs/
+*.log
+apex_oracle.log
+
+# ─── DATABASE (local) ────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ─── OS FILES ────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── IDE ─────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+
+# ─── CHARTS (temporary) ──────────────────────────
+charts/
+*.png
+*.jpg
