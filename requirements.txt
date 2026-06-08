@@ -6,7 +6,7 @@ iqoptionapi==0.5
 
 # ─── TECHNICAL ANALYSIS ──────────────────────────
 pandas==2.1.4
-pandas-ta==0.3.14b
+pandas-ta
 numpy==1.26.2
 
 # ─── AI BRAIN ────────────────────────────────────
