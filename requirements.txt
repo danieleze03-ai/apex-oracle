@@ -6,7 +6,7 @@ iqoptionapi==0.5
 
 # ─── TECHNICAL ANALYSIS ──────────────────────────
 pandas==2.1.4
-git+https://github.com/twopirllc/pandas-ta.git@development
+ta==0.11.0
 numpy==1.26.2
 
 # ─── AI BRAIN ────────────────────────────────────
