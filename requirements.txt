@@ -1,51 +1,25 @@
-# ⚡ APEX ORACLE - AO-1.0
-# All dependencies for the bot
-
-# ─── BROKER CONNECTION ───────────────────────────
 iqoptionapi==0.5
-
-# ─── TECHNICAL ANALYSIS ──────────────────────────
 pandas==2.1.4
-ta==0.11.0
 numpy==1.26.2
-
-# ─── AI BRAIN ────────────────────────────────────
-groq==0.4.2
-
-# ─── SENTIMENT ANALYSIS ──────────────────────────
-textblob==0.17.1
-nltk==3.8.1
-requests==2.31.0
-beautifulsoup4==4.12.2
-lxml==4.9.3
-
-# ─── DATABASE ────────────────────────────────────
-supabase==2.3.0
-
-# ─── TELEGRAM BOT ────────────────────────────────
+ta==0.11.0
+groq
+textblob
+nltk
+requests
+beautifulsoup4
+lxml
+supabase
 python-telegram-bot==20.7
-
-# ─── PRICE VERIFICATION ──────────────────────────
-yfinance==0.2.35
-
-# ─── WEB SERVER ──────────────────────────────────
-flask==3.0.0
-
-# ─── SCHEDULING ──────────────────────────────────
-APScheduler==3.10.4
-pytz==2023.3
-
-# ─── UTILITIES ───────────────────────────────────
-python-dotenv==1.0.0
-loguru==0.7.2
-colorama==0.4.6
-aiohttp==3.9.1
-
-# ─── DATA BACKUP ─────────────────────────────────
-google-auth==2.25.2
-google-auth-oauthlib==1.2.0
-google-api-python-client==2.111.0
-
-# ─── CHARTS ──────────────────────────────────────
-matplotlib==3.8.2
-Pillow==10.1.0
+yfinance
+flask
+APScheduler
+pytz
+python-dotenv
+loguru
+colorama
+aiohttp
+google-auth
+google-auth-oauthlib
+google-api-python-client
+matplotlib
+Pillow
