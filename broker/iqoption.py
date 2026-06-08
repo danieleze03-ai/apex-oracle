@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from loguru import logger
 from dotenv import load_dotenv
-from iqoptionapi.api import IQOptionAPI as IQ_Option
+from iqoptionapi.stable_api import IQ_Option
 
 load_dotenv()
 
@@ -29,7 +29,7 @@ def connect() -> bool:
             return False
 
         logger.info(f"⚡ Connecting to IQ Option as {email}...")
-        iq = IQ_Option("iqoptionapi.com", email, password)
+        iq = IQ_Option(email, password)
         iq.connect()
 
         if iq.check_connect():

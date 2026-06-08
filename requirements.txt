@@ -1,4 +1,5 @@
-iqoptionapi
+https://github.com/iqoptionapi/iqoptionapi/archive/refs/heads/master.zip
+websocket-client==0.56
 pandas==2.1.4
 numpy==1.26.2
 ta==0.11.0
