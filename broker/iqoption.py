@@ -13,10 +13,6 @@ from iqoptionapi.api import IQOptionAPI as IQ_Option
 
 load_dotenv()
 
-# ─────────────────────────────────────────────────
-# CONNECTION
-# ─────────────────────────────────────────────────
-
 # Global IQ Option instance
 iq = None
 
@@ -33,7 +29,7 @@ def connect() -> bool:
             return False
 
         logger.info(f"⚡ Connecting to IQ Option as {email}...")
-        iq = IQ_Option(email, password)
+        iq = IQ_Option("iqoption.com", email, password)
         iq.connect()
 
         if iq.check_connect():
@@ -92,10 +88,6 @@ def ensure_connected() -> bool:
     return True
 
 
-# ─────────────────────────────────────────────────
-# ACCOUNT INFO
-# ─────────────────────────────────────────────────
-
 def get_balance() -> float:
     """Get current account balance"""
     global iq
@@ -131,17 +123,7 @@ def switch_mode(mode: str) -> bool:
         return False
 
 
-# ─────────────────────────────────────────────────
-# MARKET DATA
-# ─────────────────────────────────────────────────
-
 def get_candles(pair: str, timeframe: int, count: int = 100) -> list:
-    """
-    Fetch candle data for a pair
-    pair      = "EURUSD-OTC"
-    timeframe = candle size in seconds (60=1min, 300=5min)
-    count     = number of candles to fetch
-    """
     global iq
     try:
         if not ensure_connected():
@@ -174,7 +156,6 @@ def get_candles(pair: str, timeframe: int, count: int = 100) -> list:
 
 
 def get_current_price(pair: str) -> float:
-    """Get current live price for a pair"""
     global iq
     try:
         if not ensure_connected():
@@ -189,7 +170,6 @@ def get_current_price(pair: str) -> float:
 
 
 def get_all_pairs() -> list:
-    """Get list of all available pairs"""
     global iq
     try:
         if not ensure_connected():
@@ -202,7 +182,6 @@ def get_all_pairs() -> list:
 
 
 def is_pair_open(pair: str) -> bool:
-    """Check if a trading pair is currently open"""
     global iq
     try:
         if not ensure_connected():
@@ -223,16 +202,7 @@ def is_pair_open(pair: str) -> bool:
         return False
 
 
-# ─────────────────────────────────────────────────
-# TRADE EXECUTION
-# ─────────────────────────────────────────────────
-
-def place_trade(
-    pair:      str,
-    direction: str,
-    stake:     float,
-    expiry:    int = 5
-) -> dict:
+def place_trade(pair: str, direction: str, stake: float, expiry: int = 5) -> dict:
     global iq
     try:
         if not ensure_connected():
@@ -252,7 +222,6 @@ def place_trade(
             return {"success": False, "error": "Insufficient balance"}
 
         logger.info(f"⚡ Placing trade: {pair} {direction.upper()} ${stake} {expiry}min")
-
         status, trade_id = iq.buy(stake, pair, direction, expiry)
 
         if status:
@@ -295,10 +264,6 @@ def check_trade_result(trade_id: int) -> dict:
         return {"result": "unknown", "profit": 0}
 
 
-# ─────────────────────────────────────────────────
-# STANDALONE TEST
-# ─────────────────────────────────────────────────
-
 if __name__ == "__main__":
     print("\n⚡ APEX ORACLE — IQ Option Connection Test")
     print("─" * 45)
@@ -307,17 +272,5 @@ if __name__ == "__main__":
         print(f"\n✅ Connected!")
         print(f"💰 Balance: ${get_balance():.2f}")
         print(f"📊 Mode: {get_mode()}")
-
-        print("\n📈 Testing candle fetch...")
-        candles = get_candles("EURUSD-OTC", 5, 10)
-        if candles:
-            print(f"✅ Got {len(candles)} candles!")
-            print(f"Latest close: {candles[-1]['close']}")
-        else:
-            print("❌ No candles returned")
-
-        print("\n✅ IQ Option connection test complete!")
-        disconnect()
     else:
         print("\n❌ Connection failed!")
-        print("Check your IQ_OPTION_EMAIL and IQ_OPTION_PASSWORD in .env")
