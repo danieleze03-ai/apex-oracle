@@ -9,7 +9,10 @@ import time
 from datetime import datetime
 from loguru import logger
 from dotenv import load_dotenv
-from iqoptionapi.stable_api import IQ_Option
+try:
+    from iqoptionapi.stable_api import IQ_Option
+except ImportError:
+    from iqoptionapi import IQ_Option
 
 load_dotenv()
 
