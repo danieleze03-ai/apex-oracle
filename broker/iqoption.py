@@ -29,7 +29,7 @@ def connect() -> bool:
             return False
 
         logger.info(f"⚡ Connecting to IQ Option as {email}...")
-        iq = IQ_Option("iqoption.com", email, password)
+        iq = IQ_Option("iqoptionapi.com", email, password)
         iq.connect()
 
         if iq.check_connect():
