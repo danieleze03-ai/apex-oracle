@@ -9,10 +9,7 @@ import time
 from datetime import datetime
 from loguru import logger
 from dotenv import load_dotenv
-try:
-    from iqoptionapi.stable_api import IQ_Option
-except ImportError:
-    from iqoptionapi import IQ_Option
+from iqoptionapi.api import IQOptionAPI as IQ_Option
 
 load_dotenv()
 
@@ -150,16 +147,13 @@ def get_candles(pair: str, timeframe: int, count: int = 100) -> list:
         if not ensure_connected():
             return []
 
-        # Convert minutes to seconds
         tf_seconds = timeframe * 60
-
         candles = iq.get_candles(pair, tf_seconds, count, time.time())
 
         if not candles:
             logger.warning(f"⚠️ No candles returned for {pair}")
             return []
 
-        # Format candles
         formatted = []
         for c in candles:
             formatted.append({
@@ -185,12 +179,10 @@ def get_current_price(pair: str) -> float:
     try:
         if not ensure_connected():
             return 0.0
-
         candles = get_candles(pair, 1, 1)
         if candles:
             return candles[-1]["close"]
         return 0.0
-
     except Exception as e:
         logger.error(f"❌ Failed to get price for {pair}: {e}")
         return 0.0
@@ -217,12 +209,10 @@ def is_pair_open(pair: str) -> bool:
             return False
         all_assets = iq.get_all_open_time()
 
-        # Check binary options
         if "binary" in all_assets:
             if pair in all_assets["binary"]:
                 return all_assets["binary"][pair]["open"]
 
-        # Check digital options
         if "digital" in all_assets:
             if pair in all_assets["digital"]:
                 return all_assets["digital"][pair]["open"]
@@ -243,40 +233,19 @@ def place_trade(
     stake:     float,
     expiry:    int = 5
 ) -> dict:
-    """
-    Place a binary options trade
-
-    pair      = "EURUSD-OTC"
-    direction = "call" or "put"
-    stake     = amount to trade
-    expiry    = minutes (1, 5, 15)
-
-    Returns:
-    {
-        "success": True/False,
-        "trade_id": 123456,
-        "pair": "EURUSD-OTC",
-        "direction": "call",
-        "stake": 150.0,
-        "expiry": 5,
-    }
-    """
     global iq
     try:
         if not ensure_connected():
             return {"success": False, "error": "Not connected"}
 
-        # Validate direction
         direction = direction.lower()
         if direction not in ["call", "put"]:
             return {"success": False, "error": "Direction must be call or put"}
 
-        # Check pair is open
         if not is_pair_open(pair):
             logger.warning(f"⚠️ {pair} is not open for trading!")
             return {"success": False, "error": f"{pair} is closed"}
 
-        # Check balance
         balance = get_balance()
         if stake > balance:
             logger.warning(f"⚠️ Stake ${stake} exceeds balance ${balance}")
@@ -284,7 +253,6 @@ def place_trade(
 
         logger.info(f"⚡ Placing trade: {pair} {direction.upper()} ${stake} {expiry}min")
 
-        # Place the trade
         status, trade_id = iq.buy(stake, pair, direction, expiry)
 
         if status:
@@ -308,15 +276,6 @@ def place_trade(
 
 
 def check_trade_result(trade_id: int) -> dict:
-    """
-    Check result of a completed trade
-
-    Returns:
-    {
-        "result": "win" or "loss",
-        "profit": 127.50
-    }
-    """
     global iq
     try:
         if not ensure_connected():
