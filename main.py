@@ -644,7 +644,8 @@ def startup():
                 await update.message.reply_text(f"⚠️ Balance too low: ${balance:.2f}")
                 return
 
-            pair = "EURUSD-OTC"
+            # ✅ FIXED: Use EURUSD (Deriv Forex pair) instead of EURUSD-OTC
+            pair = "EURUSD"
             direction = "CALL" if random.randint(0, 1) == 0 else "PUT"
             stake = 1.00
             expiry = 1
