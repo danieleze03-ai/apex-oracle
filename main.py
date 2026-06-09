@@ -104,8 +104,8 @@ from server.keep_alive import (
 # PAIR CONFIG
 # ─────────────────────────────────────────────────
 
-FOREX_PAIRS = ["EURUSD", "GBPUSD", "GBPJPY", "EURGBP", "USDJPY"]
-SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10"]  # 24/7 including weekends
+FOREX_PAIRS     = ["EURUSD", "GBPUSD", "GBPJPY", "EURGBP", "USDJPY"]
+SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10"]
 
 
 def get_active_pair_list() -> list:
@@ -115,7 +115,7 @@ def get_active_pair_list() -> list:
     Weekdays → Forex pairs
     """
     day = datetime.now().weekday()  # 0=Monday, 6=Sunday
-    if day >= 5:  # Saturday or Sunday
+    if day >= 5:
         logger.info("📅 Weekend detected — switching to Synthetic pairs")
         return SYNTHETIC_PAIRS
     return FOREX_PAIRS
@@ -137,10 +137,7 @@ bot_state = {
     "start_time":   datetime.now(),
 }
 
-# Timeframes to analyze (minutes)
-TIMEFRAMES = [1, 5, 15, 60]
-
-# How often to check for signals (seconds)
+TIMEFRAMES    = [1, 5, 15, 60]
 LOOP_INTERVAL = 30
 
 
@@ -231,10 +228,10 @@ def process_signal(pair: str) -> dict:
 
         if not guard["safe"]:
             asyncio.run(send_manipulation_alert({
-                "pair":         pair,
-                "deriv_price":  guard["deriv_price"],
-                "yahoo_price":  guard["yahoo_price"],
-                "difference":   guard["difference"],
+                "pair":        pair,
+                "deriv_price": guard["deriv_price"],
+                "yahoo_price": guard["yahoo_price"],
+                "difference":  guard["difference"],
             }))
             return {
                 "action": "SKIP",
@@ -250,42 +247,22 @@ def process_signal(pair: str) -> dict:
             "pair":                 pair,
             "timeframe":            "5min",
             "expiry":               "5 minutes",
-            "rsi_value":            ind_data.get(
-                "rsi", {}
-            ).get("value", 50),
-            "rsi_signal":           ind_data.get(
-                "rsi", {}
-            ).get("signal", "N/A"),
-            "macd_signal":          ind_data.get(
-                "macd", {}
-            ).get("signal", "N/A"),
-            "bb_signal":            ind_data.get(
-                "bb", {}
-            ).get("signal", "N/A"),
-            "ema_signal":           ind_data.get(
-                "ema", {}
-            ).get("signal", "N/A"),
-            "stochrsi_signal":      ind_data.get(
-                "stochrsi", {}
-            ).get("signal", "N/A"),
-            "indicators_agree":     breakdown.get(
-                "indicators", {}
-            ).get("agreements", 0),
+            "rsi_value":            ind_data.get("rsi",      {}).get("value",  50),
+            "rsi_signal":           ind_data.get("rsi",      {}).get("signal", "N/A"),
+            "macd_signal":          ind_data.get("macd",     {}).get("signal", "N/A"),
+            "bb_signal":            ind_data.get("bb",       {}).get("signal", "N/A"),
+            "ema_signal":           ind_data.get("ema",      {}).get("signal", "N/A"),
+            "stochrsi_signal":      ind_data.get("stochrsi", {}).get("signal", "N/A"),
+            "indicators_agree":     breakdown.get("indicators", {}).get("agreements", 0),
             "pattern":              confluence.get("pattern", "None"),
             "pattern_direction":    direction,
-            "pattern_strength":     breakdown.get(
-                "pattern", {}
-            ).get("strength", 0),
-            "volatility_level":     breakdown.get(
-                "volatility", {}
-            ).get("level", "MEDIUM"),
+            "pattern_strength":     breakdown.get("pattern",    {}).get("strength",  0),
+            "volatility_level":     breakdown.get("volatility", {}).get("level", "MEDIUM"),
             "volatility_tradeable": True,
             "sentiment_score":      sentiment["score"],
             "sentiment_bias":       sentiment["bias"],
             "news_blocked":         sentiment["blocked"],
-            "tf_agreements":        breakdown.get(
-                "timeframes", {}
-            ).get("agreements", 0),
+            "tf_agreements":        breakdown.get("timeframes", {}).get("agreements", 0),
             "primary_direction":    direction,
             "confluence_score":     confidence,
             "balance":              bot_state["balance"],
@@ -325,7 +302,6 @@ def process_signal(pair: str) -> dict:
 def execute_trade(signal: dict) -> bool:
     """
     Execute a trade based on signal
-
     1. Calculate stake
     2. Place live trade
     3. Wait for result
@@ -367,9 +343,7 @@ def execute_trade(signal: dict) -> bool:
         trade_result = place_trade(pair, direction, stake, expiry)
 
         if not trade_result["success"]:
-            logger.error(
-                f"❌ Trade failed: {trade_result.get('error')}"
-            )
+            logger.error(f"❌ Trade failed: {trade_result.get('error')}")
             return False
 
         trade_id = trade_result["trade_id"]
@@ -402,10 +376,9 @@ def execute_trade(signal: dict) -> bool:
         time.sleep(wait_seconds)
 
         # ── Check result ──────────────────────────
-        result  = check_trade_result(trade_id)
-        outcome = result["result"]
-        profit  = result["profit"]
-
+        result      = check_trade_result(trade_id)
+        outcome     = result["result"]
+        profit      = result["profit"]
         new_balance = get_balance()
 
         # ── Update risk state ─────────────────────
@@ -520,15 +493,18 @@ def trading_loop():
 
     while True:
         try:
-            # ── Check connection ──────────────────
-            if not is_connected():
-                logger.warning("⚠️ Disconnected! Reconnecting...")
+            # ── Update balance ────────────────────
+            # get_balance() calls ensure_connected()
+            # internally — it will auto-reconnect if
+            # truly disconnected. No manual ping needed.
+            balance = get_balance()
+
+            if balance == 0.0:
+                logger.warning("⚠️ Balance returned 0 — checking connection...")
                 if not reconnect():
                     time.sleep(30)
                     continue
 
-            # ── Update balance ────────────────────
-            balance = get_balance()
             bot_state["balance"] = balance
             update_status("balance", balance)
 
@@ -560,9 +536,8 @@ def trading_loop():
                 continue
 
             # ── Auto-select pairs ─────────────────
-            # Weekends → Synthetic | Weekdays → Forex
             active_pairs = get_active_pair_list()
-            pair         = active_pairs[0]  # session manager picks best
+            pair         = active_pairs[0]
 
             logger.info(
                 f"🔍 Analyzing {pair} | "
@@ -641,7 +616,7 @@ def startup():
     logger.info("📱 Starting Telegram bot...")
     inject_dependencies(bot_state)
     telegram_app = start_telegram_bot()
-    time.sleep(2)  # Give polling thread time to start
+    time.sleep(2)
 
     # ── Send startup report ───────────────────────
     asyncio.run(send_startup_report(balance, mode))
