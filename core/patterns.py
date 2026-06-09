@@ -4,7 +4,7 @@
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
 
-import pandas as pd
+
 from loguru import logger
 
 
@@ -396,7 +396,8 @@ def is_three_inside_down(
 # MASTER PATTERN DETECTOR
 # ─────────────────────────────────────────────────
 
-def detect_patterns(df: pd.DataFrame) -> dict:
+def detect_patterns(df) -> dict:
+    import pandas as pd
     """
     Detect all patterns on latest candles
 
