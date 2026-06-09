@@ -8,6 +8,7 @@ import os
 import json
 import time
 import asyncio
+import functools
 import websockets
 from datetime import datetime
 from loguru import logger
@@ -47,24 +48,16 @@ PAIR_MAP = {
 # INTERNAL HELPERS
 # ─────────────────────────────────────────────────
 
-def _get_loop():
-    """Get or create event loop — reuse same loop always"""
-    global _event_loop
-    try:
-        if _event_loop is None or _event_loop.is_closed():
-            _event_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(_event_loop)
-        return _event_loop
-    except:
-        _event_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_event_loop)
-        return _event_loop
-
-
 def _run(coro):
-    """Run async function from sync context"""
-    loop = _get_loop()
-    return loop.run_until_complete(coro)
+    """Run async function from sync context safely"""
+    try:
+        loop = asyncio.get_running_loop()
+        # A loop is already running, schedule coroutine in it
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+    except RuntimeError:
+        # No loop running, start a new one
+        return asyncio.run(coro)
 
 
 def _to_deriv_symbol(pair: str) -> str:
