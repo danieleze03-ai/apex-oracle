@@ -8,12 +8,12 @@ nltk
 requests
 beautifulsoup4
 lxml
-supabase==2.3.4
-httpx==0.24.1
-gotrue==1.3.0
-postgrest==0.10.8
-storage3==0.5.4
-supafunc==0.3.1
+supabase==2.5.3
+httpx==0.25.2
+gotrue==2.4.2
+postgrest==0.13.2
+storage3==0.7.0
+supafunc==0.5.0
 python-telegram-bot==20.7
 yfinance
 flask
@@ -28,5 +28,6 @@ google-auth-oauthlib
 google-api-python-client
 matplotlib
 Pillow
+
 
 
