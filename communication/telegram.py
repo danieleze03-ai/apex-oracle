@@ -403,9 +403,15 @@ def start_telegram_bot():
 
         def run_polling():
             try:
+                import asyncio
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                app.run_polling(drop_pending_updates=True)
+                loop.run_until_complete(app.initialize())
+                loop.run_until_complete(app.start())
+                loop.run_until_complete(app.updater.start_polling(
+                    drop_pending_updates=True
+                ))
+                loop.run_forever()
             except Exception as e:
                 logger.error(f"❌ Telegram polling error: {e}")
 
