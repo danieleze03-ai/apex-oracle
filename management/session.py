@@ -83,7 +83,7 @@ def get_active_pairs() -> list:
     Weekdays (market hours) → Forex pairs
     Weekends                → Synthetic indices (24/7)
     """
-    current = current_time_wat()
+    current = now_wat()
     weekend = is_weekend()
 
     # Weekend — synthetic indices only
