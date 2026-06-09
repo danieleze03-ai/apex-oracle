@@ -7,7 +7,7 @@
 import os
 from datetime import datetime
 from loguru import logger
-from supabase import create_client, Client
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,7 +16,8 @@ load_dotenv()
 # CONNECTION
 # ─────────────────────────────────────────────────
 
-def get_client() -> Client:
+def get_client():
+    from supabase import create_client, Client
     """Create and return Supabase client"""
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
