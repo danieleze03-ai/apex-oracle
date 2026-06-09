@@ -129,6 +129,7 @@ bot_state = {
     "last_signal":  None,
     "last_trade":   None,
     "start_time":   datetime.now(),
+    "last_daily_summary_date": None,  # 🆕 Track last daily summary date
 }
 
 TIMEFRAMES    = [1, 5, 15, 60]
@@ -447,10 +448,14 @@ def run_daily_tasks():
     now = datetime.now()
 
     # Daily report at 8PM WAT
-    if now.hour == 20 and now.minute < 2:
-        logger.info("📊 Running daily report...")
-        asyncio.run(send_daily_summary())
-        update_daily_performance()
+    # 🔧 FIX: Ensure it only runs once per day by tracking the date in bot_state
+    if now.hour == 20:
+        if bot_state.get("last_daily_summary_date") != now.date():
+            logger.info("📊 Running daily report...")
+            asyncio.run(send_daily_summary())
+            update_daily_performance()
+            bot_state["last_daily_summary_date"] = now.date()
+            logger.success("✅ Daily report sent successfully.")
 
     # Weekly evolution Sunday midnight
     if should_run_evolution():
@@ -716,7 +721,7 @@ def startup():
     # ── Detect weekend mode ───────────────────────
     active_pairs = get_active_pair_list()
     is_weekend   = False  # Always False — synthetic-only
-    pair_display = "V75, V50, V25, V10, V100, V60, V90"
+    pair_display = "V75, V50, V25, V10, V100"
 
     logger.success("=" * 50)
     logger.success(f"✅ APEX ORACLE IS ONLINE!")
