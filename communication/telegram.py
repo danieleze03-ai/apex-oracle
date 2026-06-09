@@ -6,6 +6,7 @@
 
 import os
 import asyncio
+import threading
 from datetime import datetime
 from loguru import logger
 from dotenv import load_dotenv
@@ -276,10 +277,10 @@ async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         msg = "⚡ <b>LAST 10 TRADES</b>\n" + "─" * 30 + "\n"
         for t in trades:
-            emoji  = "✅" if t.get("result") == "WIN" else "❌"
-            pnl    = t.get("profit_loss", 0) or 0
-            pnl_str= f"+${pnl:.2f}" if pnl > 0 else f"-${abs(pnl):.2f}"
-            msg   += (
+            emoji   = "✅" if t.get("result") == "WIN" else "❌"
+            pnl     = t.get("profit_loss", 0) or 0
+            pnl_str = f"+${pnl:.2f}" if pnl > 0 else f"-${abs(pnl):.2f}"
+            msg    += (
                 f"{emoji} {t.get('pair')} "
                 f"{t.get('direction')} "
                 f"{pnl_str}\n"
@@ -377,15 +378,32 @@ async def cmd_shutdown(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────────
 
 def start_telegram_bot():
-    """Start Telegram bot in background"""
+    """
+    Start Telegram bot in background thread.
+    Clears stale sessions FIRST to prevent Conflict errors on Render restarts.
+    """
     try:
         if not TOKEN:
             logger.error("❌ TELEGRAM_BOT_TOKEN missing!")
             return None
 
+        # ── STEP 1: Kill any stale polling session ──
+        # This runs synchronously BEFORE the thread starts.
+        # Every Render restart wipes the old session so the
+        # new instance never conflicts with the previous one.
+        async def _clear_stale_session():
+            try:
+                async with Bot(token=TOKEN) as bot:
+                    await bot.delete_webhook(drop_pending_updates=True)
+                logger.info("🧹 Stale Telegram session cleared")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not clear session (non-fatal): {e}")
+
+        asyncio.run(_clear_stale_session())
+
+        # ── STEP 2: Build app and register commands ──
         app = Application.builder().token(TOKEN).build()
 
-        # Register all commands
         app.add_handler(CommandHandler("start",    cmd_start))
         app.add_handler(CommandHandler("status",   cmd_status))
         app.add_handler(CommandHandler("pause",    cmd_pause))
@@ -397,18 +415,16 @@ def start_telegram_bot():
         app.add_handler(CommandHandler("risk",     cmd_risk))
         app.add_handler(CommandHandler("shutdown", cmd_shutdown))
 
-        # Start polling in background thread
-        import threading
-
+        # ── STEP 3: Start polling in background thread ──
         def run_polling():
             try:
-                import asyncio
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(app.initialize())
                 loop.run_until_complete(app.start())
                 loop.run_until_complete(app.updater.start_polling(
-                    drop_pending_updates=True
+                    drop_pending_updates=True,  # belt-and-suspenders safety
+                    allowed_updates=Update.ALL_TYPES,
                 ))
                 loop.run_forever()
             except Exception as e:
@@ -434,7 +450,6 @@ if __name__ == "__main__":
     print("─" * 45)
     print("Sending test message...")
 
-    import asyncio
     asyncio.run(send_alert(
         "⚡ <b>APEX ORACLE</b> is online!\n"
         "We Don't Predict. We Know. 🚀"

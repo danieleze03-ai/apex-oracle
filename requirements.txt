@@ -1,30 +1,55 @@
-websockets>=11.0
+# ─────────────────────────────────────────────────
+# APEX ORACLE — Requirements
+# Pinned for stability on Render (Python 3.11)
+# ─────────────────────────────────────────────────
+
+# --- Data & Analysis ---
 pandas==2.1.4
 numpy==1.26.2
 ta==0.11.0
+
+# --- HTTP & Async ---
+# httpx MUST stay ==0.25.2:
+#   python-telegram-bot==20.7 requires httpx>=0.24,<0.26
+#   supabase==2.7.4 internals break on httpx>=0.28 (proxy= kwarg removed)
+httpx==0.25.2
+requests>=2.31.0,<3.0.0
+aiohttp>=3.9.0,<4.0.0
+websockets>=11.0
+
+# --- Telegram Bot ---
+python-telegram-bot==20.7
+
+# --- Database ---
+supabase==2.7.4
+
+# --- AI / NLP ---
 groq
 textblob
 nltk
-requests
+
+# --- Web Scraping ---
 beautifulsoup4
 lxml
-supabase==2.7.4
-httpx==0.25.2
-python-telegram-bot==20.7
+
+# --- Market Data ---
 yfinance
+
+# --- Web Server ---
 flask
 APScheduler
 pytz
-python-dotenv
-loguru
-colorama
-aiohttp
+
+# --- Google APIs ---
 google-auth
 google-auth-oauthlib
 google-api-python-client
+
+# --- Visuals ---
 matplotlib
 Pillow
 
-
-
-
+# --- Utilities ---
+python-dotenv
+loguru
+colorama
