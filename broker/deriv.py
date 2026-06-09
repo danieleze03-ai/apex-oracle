@@ -27,16 +27,17 @@ trading_mode     = "demo"
 open_trades      = {}
 _last_ping_time  = 0
 _shared_loop     = None
+_ws_lock         = None  # ← NEW: prevents concurrent WebSocket calls
 
 # Pair mapping: our pairs → Deriv symbols
 PAIR_MAP = {
-    "V75":    "R_75",
-    "V50":    "R_50",
-    "V25":    "R_25",
-    "V10":    "R_10",
-    "V100":   "R_100",
-    "V60":    "R_60",
-    "V90":    "R_90",
+    "V75":  "R_75",
+    "V50":  "R_50",
+    "V25":  "R_25",
+    "V10":  "R_10",
+    "V100": "R_100",
+    "V60":  "R_60",
+    "V90":  "R_90",
 }
 
 
@@ -53,7 +54,7 @@ def _run(coro):
             _shared_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(_shared_loop)
         loop = _shared_loop
-    
+
     if loop.is_running():
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result()
@@ -65,18 +66,32 @@ def _to_deriv_symbol(pair: str) -> str:
     return PAIR_MAP.get(pair.upper(), pair)
 
 
-async def _send_receive(payload: dict, timeout: int = 10) -> dict:
+def _get_lock():
+    """Get or create the asyncio lock for the current loop"""
+    global _ws_lock, _shared_loop
+    if _ws_lock is None:
+        if _shared_loop is None or _shared_loop.is_closed():
+            _shared_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_shared_loop)
+        _ws_lock = asyncio.Lock()
+    return _ws_lock
+
+
+async def _send_receive(payload: dict, timeout: int = 15) -> dict:
+    """Thread-safe send/receive — one call at a time"""
     global ws_connection
-    try:
-        await ws_connection.send(json.dumps(payload))
-        response = await asyncio.wait_for(ws_connection.recv(), timeout=timeout)
-        return json.loads(response)
-    except asyncio.TimeoutError:
-        logger.error("❌ Deriv API timeout!")
-        return {}
-    except Exception as e:
-        logger.error(f"❌ WebSocket send/receive error: {e}")
-        return {}
+    lock = _get_lock()
+    async with lock:
+        try:
+            await ws_connection.send(json.dumps(payload))
+            response = await asyncio.wait_for(ws_connection.recv(), timeout=timeout)
+            return json.loads(response)
+        except asyncio.TimeoutError:
+            logger.error("❌ Deriv API timeout!")
+            return {}
+        except Exception as e:
+            logger.error(f"❌ WebSocket send/receive error: {e}")
+            return {}
 
 
 # ─────────────────────────────────────────────────
@@ -84,7 +99,7 @@ async def _send_receive(payload: dict, timeout: int = 10) -> dict:
 # ─────────────────────────────────────────────────
 
 async def _connect_async() -> bool:
-    global ws_connection, account_balance, trading_mode
+    global ws_connection, account_balance, trading_mode, _ws_lock
 
     try:
         token = os.getenv("DERIV_API_TOKEN")
@@ -102,8 +117,12 @@ async def _connect_async() -> bool:
             ping_timeout=10,
         )
 
+        # Reset lock for new connection
+        _ws_lock = asyncio.Lock()
+
         auth_payload = {"authorize": token}
-        response = await _send_receive(auth_payload)
+        await ws_connection.send(json.dumps(auth_payload))
+        response = json.loads(await asyncio.wait_for(ws_connection.recv(), timeout=15))
 
         if "error" in response:
             logger.error(f"❌ Deriv auth failed: {response['error']['message']}")
@@ -113,30 +132,26 @@ async def _connect_async() -> bool:
             logger.error("❌ Deriv auth response invalid!")
             return False
 
-        auth_data = response["authorize"]
+        auth_data    = response["authorize"]
         trading_mode = "demo" if mode == "PRACTICE" else "real"
 
-        account_list = auth_data.get("account_list", [])
-        target_type = "virtual" if trading_mode == "demo" else "real"
+        account_list  = auth_data.get("account_list", [])
+        target_type   = "virtual" if trading_mode == "demo" else "real"
 
-        logger.info(f"🔍 Found {len(account_list)} account(s). Looking for {target_type} account...")
+        logger.info(
+            f"🔍 Found {len(account_list)} account(s). "
+            f"Looking for {target_type} account..."
+        )
 
-        target_account = None
         for acc in account_list:
             is_virtual = acc.get("is_virtual", 0)
-            loginid = acc.get("loginid", "")
             if trading_mode == "demo" and is_virtual == 1:
-                target_account = acc
+                logger.success(f"✅ Found correct account: {acc['loginid']}")
                 break
-            elif trading_mode == "real" and is_virtual == 0 and acc.get("currency") == "USD":
-                target_account = acc
+            elif trading_mode == "real" and is_virtual == 0 \
+                    and acc.get("currency") == "USD":
+                logger.success(f"✅ Found correct account: {acc['loginid']}")
                 break
-
-        if target_account:
-            login_id = target_account["loginid"]
-            logger.success(f"✅ Found correct account: {login_id}")
-        else:
-            logger.warning(f"⚠️ No {target_type} account found — using default")
 
         account_balance = float(auth_data.get("balance", 0.0))
 
@@ -168,8 +183,9 @@ def disconnect():
 
 
 def reconnect(max_attempts: int = 5) -> bool:
-    global ws_connection
+    global ws_connection, _ws_lock
     ws_connection = None
+    _ws_lock      = None
     for attempt in range(1, max_attempts + 1):
         logger.warning(f"🔄 Reconnect attempt {attempt}/{max_attempts}...")
         if connect():
@@ -247,42 +263,55 @@ def switch_mode(mode: str) -> bool:
 
 async def _get_candles_async(pair: str, timeframe: int, count: int) -> list:
     try:
-        symbol = _to_deriv_symbol(pair)
+        symbol   = _to_deriv_symbol(pair)
         end_time = int(time.time())
-        start_time = end_time - (timeframe * 60 * count)
 
         payload = {
             "ticks_history": symbol,
             "adjust_start_time": 1,
             "count": count,
             "end": "latest",
-            "start": start_time,
             "style": "candles",
             "granularity": timeframe * 60,
         }
 
-        response = await _send_receive(payload, timeout=15)
+        response = await _send_receive(payload, timeout=20)
+
+        if not response:
+            logger.warning(f"⚠️ Empty response for {pair} candles")
+            return []
 
         if "error" in response:
-            logger.error(f"❌ Candle error for {pair}: {response['error']['message']}")
+            logger.error(
+                f"❌ Candle error for {pair}: "
+                f"{response['error']['message']}"
+            )
             return []
 
         if "candles" not in response:
-            logger.warning(f"⚠️ No candles returned for {pair}")
+            logger.warning(f"⚠️ No candles key in response for {pair}")
+            return []
+
+        candles = response["candles"]
+        if not candles:
+            logger.warning(f"⚠️ Empty candles list for {pair}")
             return []
 
         formatted = []
-        for c in response["candles"]:
+        for c in candles:
             formatted.append({
-                "timestamp": c["epoch"],
-                "open": float(c["open"]),
-                "high": float(c["high"]),
-                "low": float(c["low"]),
-                "close": float(c["close"]),
-                "volume": 0,
+                "timestamp": int(c["epoch"]),
+                "open":      float(c["open"]),
+                "high":      float(c["high"]),
+                "low":       float(c["low"]),
+                "close":     float(c["close"]),
+                "volume":    0,
             })
 
-        logger.debug(f"📊 Got {len(formatted)} candles for {pair} {timeframe}min")
+        logger.debug(
+            f"📊 Got {len(formatted)} candles for {pair} {timeframe}min | "
+            f"Latest close: {formatted[-1]['close']}"
+        )
         return formatted
 
     except Exception as e:
@@ -294,6 +323,8 @@ def get_candles(pair: str, timeframe: int, count: int = 100) -> list:
     try:
         if not ensure_connected():
             return []
+        # Small delay between candle fetches to avoid response mixing
+        time.sleep(0.3)
         return _run(_get_candles_async(pair, timeframe, count))
     except Exception as e:
         logger.error(f"❌ get_candles error: {e}")
@@ -313,21 +344,22 @@ def get_current_price(pair: str) -> float:
 
 async def _is_pair_open_async(pair: str) -> bool:
     try:
-        symbol = _to_deriv_symbol(pair)
-        payload = {"active_symbols": "brief", "product_type": "basic"}
+        symbol   = _to_deriv_symbol(pair)
+        payload  = {"active_symbols": "brief", "product_type": "basic"}
         response = await _send_receive(payload, timeout=15)
 
         if "active_symbols" not in response:
-            return False
+            return True  # ← Default to open if check fails
 
         for asset in response["active_symbols"]:
             if asset["symbol"] == symbol:
                 return bool(asset.get("exchange_is_open", False))
 
-        return False
+        return True  # ← Default to open if pair not found
+
     except Exception as e:
         logger.error(f"❌ is_pair_open error: {e}")
-        return False
+        return True  # ← Default to open on error
 
 
 def is_pair_open(pair: str) -> bool:
@@ -337,7 +369,7 @@ def is_pair_open(pair: str) -> bool:
         return _run(_is_pair_open_async(pair))
     except Exception as e:
         logger.error(f"❌ Failed to check pair status: {e}")
-        return False
+        return True  # ← Default to open on error
 
 
 # ─────────────────────────────────────────────────
@@ -348,7 +380,7 @@ async def _place_trade_async(
     pair: str, direction: str, stake: float, expiry: int
 ) -> dict:
     try:
-        symbol = _to_deriv_symbol(pair)
+        symbol   = _to_deriv_symbol(pair)
         contract = "CALL" if direction == "call" else "PUT"
         duration = expiry * 60
 
@@ -356,13 +388,13 @@ async def _place_trade_async(
             "buy": 1,
             "price": stake,
             "parameters": {
-                "amount": stake,
-                "basis": "stake",
+                "amount":        stake,
+                "basis":         "stake",
                 "contract_type": contract,
-                "currency": "USD",
-                "duration": duration,
+                "currency":      "USD",
+                "duration":      duration,
                 "duration_unit": "s",
-                "symbol": symbol,
+                "symbol":        symbol,
             }
         }
 
@@ -376,15 +408,15 @@ async def _place_trade_async(
         if "buy" not in response:
             return {"success": False, "error": "Invalid trade response"}
 
-        buy_data = response["buy"]
-        trade_id = buy_data["contract_id"]
+        buy_data  = response["buy"]
+        trade_id  = buy_data["contract_id"]
         buy_price = float(buy_data["buy_price"])
 
         open_trades[trade_id] = {
-            "pair": pair,
+            "pair":      pair,
             "direction": direction,
-            "stake": stake,
-            "expiry": expiry,
+            "stake":     stake,
+            "expiry":    expiry,
             "buy_price": buy_price,
             "timestamp": datetime.now().isoformat(),
         }
@@ -394,12 +426,12 @@ async def _place_trade_async(
             f"{pair} {contract} ${stake}"
         )
         return {
-            "success": True,
-            "trade_id": trade_id,
-            "pair": pair,
+            "success":   True,
+            "trade_id":  trade_id,
+            "pair":      pair,
             "direction": direction,
-            "stake": stake,
-            "expiry": expiry,
+            "stake":     stake,
+            "expiry":    expiry,
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -419,10 +451,6 @@ def place_trade(
         if direction not in ["call", "put"]:
             return {"success": False, "error": "Direction must be call or put"}
 
-        if not is_pair_open(pair):
-            logger.warning(f"⚠️ {pair} is not open for trading!")
-            return {"success": False, "error": f"{pair} is closed"}
-
         balance = get_balance()
         if stake > balance:
             logger.warning(f"⚠️ Stake ${stake} exceeds balance ${balance}")
@@ -441,15 +469,17 @@ def place_trade(
 
 async def _check_trade_result_async(trade_id: int) -> dict:
     try:
-        payload = {"proposal_open_contract": 1, "contract_id": trade_id}
+        payload  = {"proposal_open_contract": 1, "contract_id": trade_id}
         response = await _send_receive(payload, timeout=15)
 
         if "error" in response:
-            logger.error(f"❌ Result check error: {response['error']['message']}")
+            logger.error(
+                f"❌ Result check error: {response['error']['message']}"
+            )
             return {"result": "unknown", "profit": 0}
 
         contract = response.get("proposal_open_contract", {})
-        status = contract.get("status", "open")
+        status   = contract.get("status", "open")
 
         if status == "open":
             logger.info(f"⏳ Trade {trade_id} still open...")
@@ -458,10 +488,14 @@ async def _check_trade_result_async(trade_id: int) -> dict:
         profit = float(contract.get("profit", 0))
 
         if profit > 0:
-            logger.success(f"✅ Trade {trade_id} → WIN! Profit: ${profit:.2f}")
+            logger.success(
+                f"✅ Trade {trade_id} → WIN! Profit: ${profit:.2f}"
+            )
             return {"result": "WIN", "profit": profit}
         else:
-            logger.warning(f"❌ Trade {trade_id} → LOSS! ${profit:.2f}")
+            logger.warning(
+                f"❌ Trade {trade_id} → LOSS! ${profit:.2f}"
+            )
             return {"result": "LOSS", "profit": profit}
 
     except Exception as e:
@@ -492,10 +526,12 @@ if __name__ == "__main__":
         print(f"💰 Balance: ${get_balance():.2f}")
         print(f"📊 Mode: {get_mode()}")
         print(f"\n🔍 Testing V75 candles...")
-        candles = get_candles("V75", 5, 5)
+        candles = get_candles("V75", 5, 10)
         if candles:
             print(f"✅ Got {len(candles)} candles!")
             print(f"   Latest close: {candles[-1]['close']}")
+        else:
+            print("❌ No candles returned!")
         disconnect()
     else:
         print("\n❌ Connection failed!")
