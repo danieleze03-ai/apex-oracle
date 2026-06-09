@@ -628,73 +628,78 @@ def startup():
     from telegram.ext import CommandHandler
 
     async def test_trade(update, context):
-        import random
-        import time
-        from broker.deriv import get_balance, place_trade, check_trade_result
-        from data.database import log_trade
-        from datetime import datetime
+    import random
+    from broker.deriv import get_balance, place_trade, check_trade_result
+    from data.database import log_trade
+    from datetime import datetime
+    import asyncio
 
-        try:
-            await update.message.reply_text("🔄 Starting test trade...")
+    try:
+        await update.message.reply_text("🔄 Starting test trade...")
 
-            balance = get_balance()
-            if balance < 5.0:
-                await update.message.reply_text(f"⚠️ Balance too low: ${balance:.2f}")
-                return
+        # Run blocking get_balance in executor to not block the bot
+        loop = asyncio.get_running_loop()
+        balance = await loop.run_in_executor(None, get_balance)
+        if balance < 5.0:
+            await update.message.reply_text(f"⚠️ Balance too low: ${balance:.2f}")
+            return
 
-            pair = "EURUSD-OTC"
-            direction = "CALL" if random.randint(0, 1) == 0 else "PUT"
-            stake = 1.00
-            expiry = 1
+        pair = "EURUSD-OTC"
+        direction = "CALL" if random.randint(0, 1) == 0 else "PUT"
+        stake = 1.00
+        expiry = 1
 
-            trade_result = place_trade(pair, direction, stake, expiry)
+        # Run blocking place_trade in executor
+        trade_result = await loop.run_in_executor(None, place_trade, pair, direction, stake, expiry)
 
-            if not trade_result.get("success"):
-                await update.message.reply_text(f"❌ Trade failed: {trade_result.get('error')}")
-                return
+        if not trade_result.get("success"):
+            await update.message.reply_text(f"❌ Trade failed: {trade_result.get('error')}")
+            return
 
-            trade_id = trade_result.get("trade_id")
-            await update.message.reply_text(
-                f"🚀 Trade placed!\n"
-                f"{pair} {direction} | ${stake} | {expiry}min\n"
-                f"Trade ID: {trade_id}\n\n"
-                f"⏳ Waiting {expiry} minutes..."
-            )
+        trade_id = trade_result.get("trade_id")
+        await update.message.reply_text(
+            f"🚀 Trade placed!\n"
+            f"{pair} {direction} | ${stake} | {expiry}min\n"
+            f"Trade ID: {trade_id}\n\n"
+            f"⏳ Waiting {expiry} minutes..."
+        )
 
-            time.sleep((expiry * 60) + 5)
+        # 🚀 DO NOT USE time.sleep() — use await asyncio.sleep()
+        await asyncio.sleep((expiry * 60) + 5)
 
-            result = check_trade_result(trade_id)
-            outcome = result.get("result", "UNKNOWN")
-            profit = result.get("profit", 0.0)
-            new_balance = get_balance()
+        # Run blocking check_trade_result in executor
+        result = await loop.run_in_executor(None, check_trade_result, trade_id)
+        outcome = result.get("result", "UNKNOWN")
+        profit = result.get("profit", 0.0)
+        new_balance = await loop.run_in_executor(None, get_balance)
 
-            log_trade({
-                "pair": pair,
-                "direction": direction,
-                "stake": stake,
-                "expiry_seconds": expiry * 60,
-                "confidence": 99.9,
-                "result": outcome,
-                "profit_loss": profit,
-                "balance_after": new_balance,
-                "pattern": "TEST_PATTERN",
-                "market_regime": "TEST",
-                "sentiment_score": 50.0,
-                "groq_reasoning": "Manual test trade",
-                "mode": "TESTING"
-            })
+        # Run blocking log_trade in executor
+        await loop.run_in_executor(None, log_trade, {
+            "pair": pair,
+            "direction": direction,
+            "stake": stake,
+            "expiry_seconds": expiry * 60,
+            "confidence": 99.9,
+            "result": outcome,
+            "profit_loss": profit,
+            "balance_after": new_balance,
+            "pattern": "TEST_PATTERN",
+            "market_regime": "TEST",
+            "sentiment_score": 50.0,
+            "groq_reasoning": "Manual test trade",
+            "mode": "TESTING"
+        })
 
-            await update.message.reply_text(
-                f"✅ **Test Trade Complete!**\n"
-                f"Result: **{outcome}**\n"
-                f"Profit/Loss: **${profit:.2f}**\n"
-                f"New Balance: **${new_balance:.2f}**\n\n"
-                f"Check Supabase table `trades` for the entry."
-            )
+        await update.message.reply_text(
+            f"✅ **Test Trade Complete!**\n"
+            f"Result: **{outcome}**\n"
+            f"Profit/Loss: **${profit:.2f}**\n"
+            f"New Balance: **${new_balance:.2f}**\n\n"
+            f"Check Supabase table `trades` for the entry."
+        )
 
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
     # Add the handler to your existing Telegram app
     telegram_app.add_handler(CommandHandler("testtrade", test_trade))
     # ═══════════════════════════════════════════════════════════
