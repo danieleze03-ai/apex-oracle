@@ -145,25 +145,9 @@ async def _connect_async() -> bool:
 
         if target_account:
             login_id = target_account["loginid"]
-            logger.info(f"🔄 Switching to {target_type} account: {login_id}")
-
-            # Switch to correct account
-            switch_resp = await _send_receive({"switch_account": login_id})
-
-            if "error" in switch_resp:
-                logger.warning(f"⚠️ Account switch warning: {switch_resp['error'].get('message', 'unknown')}")
-            else:
-                logger.success(f"✅ Switched to account: {login_id}")
-
-            # Re-authorize after switch to get correct balance
-            re_auth = await _send_receive({"authorize": token})
-            if "authorize" in re_auth:
-                auth_data = re_auth["authorize"]
-                logger.info("✅ Re-authorized successfully after account switch")
-            else:
-                logger.warning("⚠️ Re-auth after switch failed — using original auth data")
+            logger.success(f"✅ Found correct account: {login_id}")
         else:
-            logger.warning(f"⚠️ No {target_type} account found in account list — using default")
+            logger.warning(f"⚠️ No {target_type} account found — using default")
 
         # Read balance from correct account
         account_balance = float(auth_data.get("balance", 0.0))
