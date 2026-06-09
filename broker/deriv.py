@@ -21,23 +21,24 @@ load_dotenv()
 DERIV_WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
 # Global state
-ws_connection = None
-account_balance = 0.0
-trading_mode = "demo"  # "demo" or "real"
-open_trades = {}       # track active trades
+ws_connection    = None
+account_balance  = 0.0
+trading_mode     = "demo"
+open_trades      = {}
+_last_ping_time  = 0      # ← track last ping time
 
 # Pair mapping: our pairs → Deriv symbols
 PAIR_MAP = {
-    "EURUSD":  "frxEURUSD",
-    "GBPUSD":  "frxGBPUSD",
-    "GBPJPY":  "frxGBPJPY",
-    "EURGBP":  "frxEURGBP",
-    "USDJPY":  "frxUSDJPY",
-    "V75":     "R_75",
-    "V50":     "R_50",
-    "V25":     "R_25",
-    "V10":     "R_10",
-    "V100":    "R_100",
+    "EURUSD": "frxEURUSD",
+    "GBPUSD": "frxGBPUSD",
+    "GBPJPY": "frxGBPJPY",
+    "EURGBP": "frxEURGBP",
+    "USDJPY": "frxUSDJPY",
+    "V75":    "R_75",
+    "V50":    "R_50",
+    "V25":    "R_25",
+    "V10":    "R_10",
+    "V100":   "R_100",
 }
 
 
@@ -101,11 +102,18 @@ async def _connect_async() -> bool:
             return False
 
         logger.info("⚡ Connecting to Deriv.com WebSocket...")
-        ws_connection = await websockets.connect(DERIV_WS_URL)
+
+        # ── FIX: ping_interval and ping_timeout keep
+        #    the WebSocket alive between loop checks
+        ws_connection = await websockets.connect(
+            DERIV_WS_URL,
+            ping_interval = 20,   # send ping every 20s
+            ping_timeout  = 10,   # wait 10s for pong
+        )
 
         # Authorize with token
         auth_payload = {"authorize": token}
-        response = await _send_receive(auth_payload)
+        response     = await _send_receive(auth_payload)
 
         if "error" in response:
             logger.error(f"❌ Deriv auth failed: {response['error']['message']}")
@@ -115,17 +123,9 @@ async def _connect_async() -> bool:
             logger.error("❌ Deriv auth response invalid!")
             return False
 
-        auth_data = response["authorize"]
-
-        # Set trading mode
+        auth_data    = response["authorize"]
         trading_mode = "demo" if mode == "PRACTICE" else "real"
 
-        # ─────────────────────────────────────────
-        # FIX: Find correct account and switch to it
-        # Deriv has separate virtual/real accounts
-        # We must switch to the right one to get
-        # the correct balance
-        # ─────────────────────────────────────────
         account_list = auth_data.get("account_list", [])
         target_type  = "virtual" if trading_mode == "demo" else "real"
 
@@ -135,7 +135,6 @@ async def _connect_async() -> bool:
         for acc in account_list:
             is_virtual = acc.get("is_virtual", 0)
             loginid    = acc.get("loginid", "")
-            logger.debug(f"   → Account: {loginid} | Virtual: {is_virtual}")
             if trading_mode == "demo" and is_virtual == 1:
                 target_account = acc
                 break
@@ -149,10 +148,13 @@ async def _connect_async() -> bool:
         else:
             logger.warning(f"⚠️ No {target_type} account found — using default")
 
-        # Read balance from correct account
         account_balance = float(auth_data.get("balance", 0.0))
 
-        logger.success(f"✅ Connected to Deriv! Mode: {trading_mode.upper()} | Balance: ${account_balance:.2f}")
+        logger.success(
+            f"✅ Connected to Deriv! "
+            f"Mode: {trading_mode.upper()} | "
+            f"Balance: ${account_balance:.2f}"
+        )
         return True
 
     except Exception as e:
@@ -192,16 +194,19 @@ def reconnect(max_attempts: int = 5) -> bool:
 
 
 def is_connected() -> bool:
-    """Check if WebSocket is still alive"""
+    """
+    Check if WebSocket is still alive.
+    FIX: Only checks ws state — no ping call.
+    Pinging is now handled automatically by
+    websockets ping_interval on the connection.
+    """
     global ws_connection
     try:
         if ws_connection is None:
             return False
         if ws_connection.closed:
             return False
-        # Send a ping to verify connection is truly alive
-        _run(ws_connection.ping())
-        return True
+        return True   # ← no more manual ping here
     except:
         return False
 
@@ -265,17 +270,17 @@ def switch_mode(mode: str) -> bool:
 
 async def _get_candles_async(pair: str, timeframe: int, count: int) -> list:
     try:
-        symbol = _to_deriv_symbol(pair)
-        end_time = int(time.time())
+        symbol     = _to_deriv_symbol(pair)
+        end_time   = int(time.time())
         start_time = end_time - (timeframe * 60 * count)
 
         payload = {
             "ticks_history": symbol,
             "adjust_start_time": 1,
-            "count": count,
-            "end": "latest",
-            "start": start_time,
-            "style": "candles",
+            "count":       count,
+            "end":         "latest",
+            "start":       start_time,
+            "style":       "candles",
             "granularity": timeframe * 60,
         }
 
@@ -297,7 +302,7 @@ async def _get_candles_async(pair: str, timeframe: int, count: int) -> list:
                 "high":      float(c["high"]),
                 "low":       float(c["low"]),
                 "close":     float(c["close"]),
-                "volume":    0,  # Deriv doesn't provide volume on candles
+                "volume":    0,
             })
 
         logger.debug(f"📊 Got {len(formatted)} candles for {pair} {timeframe}min")
@@ -333,7 +338,7 @@ def get_current_price(pair: str) -> float:
 
 async def _is_pair_open_async(pair: str) -> bool:
     try:
-        symbol = _to_deriv_symbol(pair)
+        symbol  = _to_deriv_symbol(pair)
         payload = {"active_symbols": "brief", "product_type": "basic"}
         response = await _send_receive(payload, timeout=15)
 
@@ -365,11 +370,13 @@ def is_pair_open(pair: str) -> bool:
 # TRADE EXECUTION
 # ─────────────────────────────────────────────────
 
-async def _place_trade_async(pair: str, direction: str, stake: float, expiry: int) -> dict:
+async def _place_trade_async(
+    pair: str, direction: str, stake: float, expiry: int
+) -> dict:
     try:
-        symbol    = _to_deriv_symbol(pair)
-        contract  = "CALL" if direction == "call" else "PUT"
-        duration  = expiry * 60  # convert minutes to seconds
+        symbol   = _to_deriv_symbol(pair)
+        contract = "CALL" if direction == "call" else "PUT"
+        duration = expiry * 60
 
         payload = {
             "buy": 1,
@@ -395,11 +402,10 @@ async def _place_trade_async(pair: str, direction: str, stake: float, expiry: in
         if "buy" not in response:
             return {"success": False, "error": "Invalid trade response"}
 
-        buy_data   = response["buy"]
-        trade_id   = buy_data["contract_id"]
-        buy_price  = float(buy_data["buy_price"])
+        buy_data  = response["buy"]
+        trade_id  = buy_data["contract_id"]
+        buy_price = float(buy_data["buy_price"])
 
-        # Store in open trades tracker
         open_trades[trade_id] = {
             "pair":      pair,
             "direction": direction,
@@ -409,7 +415,10 @@ async def _place_trade_async(pair: str, direction: str, stake: float, expiry: in
             "timestamp": datetime.now().isoformat(),
         }
 
-        logger.success(f"✅ Trade placed! ID: {trade_id} | {pair} {contract} ${stake}")
+        logger.success(
+            f"✅ Trade placed! ID: {trade_id} | "
+            f"{pair} {contract} ${stake}"
+        )
         return {
             "success":   True,
             "trade_id":  trade_id,
@@ -425,7 +434,9 @@ async def _place_trade_async(pair: str, direction: str, stake: float, expiry: in
         return {"success": False, "error": str(e)}
 
 
-def place_trade(pair: str, direction: str, stake: float, expiry: int = 5) -> dict:
+def place_trade(
+    pair: str, direction: str, stake: float, expiry: int = 5
+) -> dict:
     """Place a binary options trade on Deriv"""
     try:
         if not ensure_connected():
@@ -444,7 +455,10 @@ def place_trade(pair: str, direction: str, stake: float, expiry: int = 5) -> dic
             logger.warning(f"⚠️ Stake ${stake} exceeds balance ${balance}")
             return {"success": False, "error": "Insufficient balance"}
 
-        logger.info(f"⚡ Placing trade: {pair} {direction.upper()} ${stake} {expiry}min")
+        logger.info(
+            f"⚡ Placing trade: {pair} "
+            f"{direction.upper()} ${stake} {expiry}min"
+        )
         return _run(_place_trade_async(pair, direction, stake, expiry))
 
     except Exception as e:
@@ -454,7 +468,7 @@ def place_trade(pair: str, direction: str, stake: float, expiry: int = 5) -> dic
 
 async def _check_trade_result_async(trade_id: int) -> dict:
     try:
-        payload = {"proposal_open_contract": 1, "contract_id": trade_id}
+        payload  = {"proposal_open_contract": 1, "contract_id": trade_id}
         response = await _send_receive(payload, timeout=15)
 
         if "error" in response:
