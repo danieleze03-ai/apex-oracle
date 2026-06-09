@@ -15,7 +15,7 @@ from loguru import logger
 def prepare_dataframe(candles: list):
     """Convert raw candle list to DataFrame"""
     try:
-        import pandas as pd  # ← LAZY
+        import pandas as pd
         df = pd.DataFrame(candles)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
         df = df.sort_values("timestamp").reset_index(drop=True)
@@ -35,12 +35,12 @@ def prepare_dataframe(candles: list):
 def calculate_rsi(df, period: int = 14):
     """
     Calculate RSI
-    < 30 = Oversold  → CALL signal
-    > 70 = Overbought → PUT signal
-    45-55 = Neutral  → SKIP
+    < 35 = Oversold  → CALL signal
+    > 65 = Overbought → PUT signal
+    45-55 = Neutral  → NEUTRAL
     """
     try:
-        import pandas as pd  # ← LAZY
+        import pandas as pd
         delta    = df["close"].diff()
         gain     = delta.where(delta > 0, 0.0)
         loss     = -delta.where(delta < 0, 0.0)
@@ -57,14 +57,16 @@ def calculate_rsi(df, period: int = 14):
 
 def get_rsi_signal(rsi_value: float) -> str:
     """Get trading signal from RSI value"""
-    if rsi_value < 30:
+    if rsi_value < 35:
         return "CALL"
-    elif rsi_value > 70:
+    elif rsi_value > 65:
         return "PUT"
-    elif 45 <= rsi_value <= 55:
-        return "NEUTRAL"
+    elif rsi_value < 45:
+        return "CALL"    # Leaning oversold
+    elif rsi_value > 55:
+        return "PUT"     # Leaning overbought
     else:
-        return "WEAK"
+        return "NEUTRAL"
 
 
 # ─────────────────────────────────────────────────
@@ -279,7 +281,7 @@ def get_stoch_rsi_signal(stoch_data: dict) -> str:
 def calculate_atr(df, period: int = 14):
     """Calculate ATR for volatility measurement"""
     try:
-        import pandas as pd  # ← LAZY
+        import pandas as pd
         high       = df["high"]
         low        = df["low"]
         close      = df["close"]
@@ -306,7 +308,7 @@ def calculate_atr(df, period: int = 14):
 def generate_signal(candles: list, pair: str = "") -> dict:
     """
     Generate complete trading signal from candle data
-    5 Indicators — minimum 3/5 must agree to trade (adjusted for Synthetics).
+    5 Indicators — minimum 3/5 must agree to trade.
     """
     try:
         if len(candles) < 50:
@@ -349,23 +351,22 @@ def generate_signal(candles: list, pair: str = "") -> dict:
         calls = signals.count("CALL")
         puts  = signals.count("PUT")
 
-        # 🔧 KEY CHANGE: Lowered from >= 4 to >= 3 for Synthetics
-        if calls >= 3:  # Was >= 4
+        if calls >= 4:
             direction  = "CALL"
             agreement  = calls
-            confidence = 75 + (calls * 5)
-        elif puts >= 3:  # Was >= 4
-            direction  = "PUT"
-            agreement  = puts
-            confidence = 75 + (puts * 5)
-        elif calls == 2:
+            confidence = 90
+        elif calls == 3:
             direction  = "CALL"
             agreement  = calls
-            confidence = 55
-        elif puts == 2:
+            confidence = 75
+        elif puts >= 4:
             direction  = "PUT"
             agreement  = puts
-            confidence = 55
+            confidence = 90
+        elif puts == 3:
+            direction  = "PUT"
+            agreement  = puts
+            confidence = 75
         else:
             direction  = "SKIP"
             agreement  = 0

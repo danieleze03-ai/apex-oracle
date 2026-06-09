@@ -1,7 +1,7 @@
 # ⚡ APEX ORACLE — AO-1.0
 # Confluence Scorer — The Final Judge
 # Combines ALL signals into one confidence score
-# Only trades with score >= 75/100
+# Only trades with score >= 65/100
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ WEIGHTS = {
 }
 
 # Minimum score to execute a trade
-MIN_CONFIDENCE = 75
+MIN_CONFIDENCE = 65
 
 
 # ─────────────────────────────────────────────────
@@ -34,13 +34,6 @@ MIN_CONFIDENCE = 75
 def score_timeframes(candles_by_tf: dict, direction: str) -> dict:
     """
     Check how many timeframes agree with signal direction
-
-    candles_by_tf = {
-        "1":  [...],
-        "5":  [...],
-        "15": [...],
-        "60": [...],
-    }
     """
     try:
         agreements = 0
@@ -149,21 +142,22 @@ def score_pattern(pattern: dict, direction: str) -> dict:
 # ─────────────────────────────────────────────────
 
 def score_volatility(volatility: dict) -> dict:
-    """Score volatility conditions"""
+    """Score volatility conditions — tuned for Synthetics"""
     try:
         level     = volatility.get("level",     "UNKNOWN")
         tradeable = volatility.get("tradeable", False)
 
+        # Synthetics are frequently HIGH volatility — don't penalise them
         if level == "MEDIUM" and tradeable:
             score = 100
+        elif level == "HIGH" and tradeable:
+            score = 80    # Was 20 — synthetics live here
         elif level == "LOW":
-            score = 30
-        elif level == "HIGH":
-            score = 20
+            score = 60    # Was 30 — low vol still tradeable
         elif level == "EXTREME":
             score = 0
         else:
-            score = 50
+            score = 70    # UNKNOWN — give benefit of the doubt
 
         return {
             "level":     level,
@@ -196,8 +190,8 @@ def calculate_confluence(
 
     Trade thresholds:
     >= 75 → TRADE FULL stake
-    70-74 → TRADE HALF stake
-    < 70  → SKIP
+    65-74 → TRADE HALF stake
+    < 65  → SKIP
 
     Returns:
     {
@@ -275,7 +269,7 @@ def calculate_confluence(
             action     = "TRADE"
             stake_size = "FULL"
             reason     = f"✅ Strong {direction} confluence"
-        elif final_score >= 70:
+        elif final_score >= 65:
             action     = "TRADE"
             stake_size = "HALF"
             reason     = f"⚡ Moderate {direction} — half stake"
@@ -285,10 +279,11 @@ def calculate_confluence(
             reason     = f"❌ Weak confluence ({final_score}%) — skipping"
 
         # ── Step 6: Timeframe override ────────────
-        if tf_score["agreements"] < 2 and action == "TRADE":
+        # Only block if ZERO timeframes agree at all
+        if tf_score["total"] > 0 and tf_score["agreements"] == 0 and action == "TRADE":
             action     = "SKIP"
             stake_size = "SKIP"
-            reason     = "Timeframes don't agree — skipping"
+            reason     = "No timeframes agree — skipping"
 
         result = {
             "direction":  direction,
