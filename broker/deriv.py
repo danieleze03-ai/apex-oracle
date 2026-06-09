@@ -133,9 +133,13 @@ async def _connect_async() -> bool:
 
         target_account = None
         for acc in account_list:
-            acc_type = acc.get("account_type", "")
-            logger.debug(f"   → Account: {acc.get('loginid')} | Type: {acc_type}")
-            if acc_type == target_type:
+            is_virtual = acc.get("is_virtual", 0)
+            loginid    = acc.get("loginid", "")
+            logger.debug(f"   → Account: {loginid} | Virtual: {is_virtual}")
+            if trading_mode == "demo" and is_virtual == 1:
+                target_account = acc
+                break
+            elif trading_mode == "real" and is_virtual == 0 and acc.get("currency") == "USD":
                 target_account = acc
                 break
 
