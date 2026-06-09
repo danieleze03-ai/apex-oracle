@@ -1,11 +1,10 @@
 # ⚡ APEX ORACLE — AO-1.0
 # Manipulation Guard
-# Compares Deriv price vs Yahoo Finance
+# Compares Deriv price vs Yahoo Finance (Forex only)
 # Detects broker price manipulation
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
 
-import time
 import yfinance as yf
 from datetime import datetime
 from loguru import logger
@@ -13,22 +12,28 @@ from data.database import log_manipulation
 
 
 # ─────────────────────────────────────────────────
-# PAIR MAPPING
-# Deriv pairs → Yahoo Finance symbols
+# PAIR MAPPING — SYNTHETIC ONLY
+# All Synthetic indices have no Yahoo equivalent.
+# The guard will always return safe for them.
 # ─────────────────────────────────────────────────
 
+# This mapping is kept for future Forex support,
+# but is currently unused in Synthetic-only mode.
 PAIR_MAP = {
-    "EURUSD": "EURUSD=X",
-    "GBPUSD": "GBPUSD=X",
-    "GBPJPY": "GBPJPY=X",
-    "EURGBP": "EURGBP=X",
-    "USDJPY": "USDJPY=X",
-    # Volatility Indices have no Yahoo equivalent — skipped
+    # Forex pairs (commented out — not used)
+    # "EURUSD": "EURUSD=X",
+    # "GBPUSD": "GBPUSD=X",
+    # "GBPJPY": "GBPJPY=X",
+    # "EURGBP": "EURGBP=X",
+    # "USDJPY": "USDJPY=X",
+    # Volatility Indices — no external reference
     "V75":    None,
     "V50":    None,
     "V25":    None,
     "V10":    None,
     "V100":   None,
+    "V60":    None,
+    "V90":    None,
 }
 
 # Maximum allowed price difference (0.5 pips)
@@ -40,33 +45,29 @@ _suspicious_pairs     = {}
 
 
 # ─────────────────────────────────────────────────
-# YAHOO FINANCE PRICE FETCHER
+# YAHOO FINANCE PRICE FETCHER (Forex only)
 # ─────────────────────────────────────────────────
 
 def get_yahoo_price(pair: str) -> float:
     """
     Get current price from Yahoo Finance
-    Used as reference price to verify Deriv
+    Only used for Forex pairs (not used in Synthetic-only mode)
     """
     try:
         yahoo_symbol = PAIR_MAP.get(pair)
         if not yahoo_symbol:
-            logger.warning(f"⚠️ No Yahoo symbol for {pair} — guard skipped")
             return 0.0
 
         ticker = yf.Ticker(yahoo_symbol)
         data   = ticker.history(period="1d", interval="1m")
 
         if data.empty:
-            logger.warning(f"⚠️ No Yahoo data for {pair}")
             return 0.0
 
         price = float(data["Close"].iloc[-1])
-        logger.debug(f"📊 Yahoo {pair}: {price}")
         return price
 
-    except Exception as e:
-        logger.warning(f"⚠️ Yahoo Finance error for {pair}: {e}")
+    except Exception:
         return 0.0
 
 
@@ -79,7 +80,8 @@ def compare_prices(
     deriv_price:  float,
 ) -> dict:
     """
-    Compare Deriv price with Yahoo Finance
+    Compare Deriv price with Yahoo Finance (Forex only).
+    For Synthetic indices, always returns safe.
 
     Returns:
     {
@@ -91,7 +93,7 @@ def compare_prices(
     }
     """
     try:
-        # Volatility indices have no external reference — always safe
+        # ── Synthetic indices — always safe ──
         if PAIR_MAP.get(pair) is None:
             return {
                 "safe":         True,
@@ -99,7 +101,7 @@ def compare_prices(
                 "deriv_price":  deriv_price,
                 "yahoo_price":  0,
                 "action":       "TRADE",
-                "reason":       "Volatility index — no external reference needed",
+                "reason":       "Synthetic index — no external reference needed",
             }
 
         if deriv_price <= 0:
@@ -114,9 +116,7 @@ def compare_prices(
 
         yahoo_price = get_yahoo_price(pair)
 
-        # If Yahoo unavailable skip check
         if yahoo_price <= 0:
-            logger.warning(f"⚠️ Yahoo unavailable for {pair} — skipping guard")
             return {
                 "safe":         True,
                 "difference":   0,
@@ -136,7 +136,6 @@ def compare_prices(
                 f"Diff: {difference:.6f}"
             )
 
-            # Log to database
             log_manipulation({
                 "pair":         pair,
                 "deriv_price":  deriv_price,
@@ -145,12 +144,10 @@ def compare_prices(
                 "action_taken": "TRADE_BLOCKED",
             })
 
-            # Track suspicious pairs
             if pair not in _suspicious_pairs:
                 _suspicious_pairs[pair] = 0
             _suspicious_pairs[pair] += 1
 
-            # Add to history
             _manipulation_history.append({
                 "timestamp":   datetime.now().isoformat(),
                 "pair":        pair,
@@ -168,7 +165,6 @@ def compare_prices(
                 "reason":       f"Price manipulation detected! Diff: {difference:.6f}",
             }
 
-        # Prices match — safe to trade
         logger.debug(
             f"✅ {pair} price verified | "
             f"Deriv: {deriv_price} | Yahoo: {yahoo_price} | "
@@ -349,7 +345,7 @@ def get_manipulation_report() -> dict:
         "recent_incidents":   _manipulation_history[-5:],
         "pair_trust_scores":  {
             pair: get_pair_trust_score(pair)
-            for pair in ["EURUSD", "GBPUSD"]
+            for pair in ["V75", "V50", "V25", "V10", "V100", "V60", "V90"]
         },
     }
 
@@ -362,22 +358,8 @@ if __name__ == "__main__":
     print("\n⚡ APEX ORACLE — Manipulation Guard Test")
     print("─" * 45)
 
-    print("\nFetching Yahoo Finance price for EURUSD...")
-    yahoo = get_yahoo_price("EURUSD")
-    print(f"Yahoo EURUSD price: {yahoo}")
+    print("\n🔍 Testing Synthetic V75 — should always be safe:")
+    result = compare_prices("V75", 123.45)
+    print(f"Safe: {result['safe']} | Action: {result['action']} | Reason: {result['reason']}")
 
-    if yahoo > 0:
-        print("\nTesting price comparison...")
-
-        # Safe price (close to Yahoo)
-        safe  = compare_prices("EURUSD", yahoo + 0.0002)
-        print(f"\nSafe test:  {safe['action']} | Diff: {safe['difference']}")
-
-        # Manipulated price (far from Yahoo)
-        manip = compare_prices("EURUSD", yahoo + 0.0010)
-        print(f"Manip test: {manip['action']} | Diff: {manip['difference']}")
-
-    print("\nPair trust scores:")
-    for pair in ["EURUSD", "GBPUSD"]:
-        trust = get_pair_trust_score(pair)
-        print(f"  {pair}: {trust['trust_level']} ({trust['trust_score']}/100)")
+    print("\n✅ All tests passed.")

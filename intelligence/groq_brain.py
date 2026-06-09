@@ -36,19 +36,20 @@ def build_trade_prompt(trade_data: dict) -> str:
     Build a detailed prompt for Groq AI
     Gives it all market context to make decision
     """
+    rsi_period = trade_data.get('rsi_period', 14)
     return f"""You are APEX ORACLE, an expert binary options trading AI.
 Analyze this market data and make a trading decision.
 
-TRADING PAIR: {trade_data.get('pair', 'EURUSD-OTC')}
+TRADING PAIR: {trade_data.get('pair', 'V75')}
 TIMEFRAME: {trade_data.get('timeframe', '5min')}
 EXPIRY: {trade_data.get('expiry', '5 minutes')}
 
 TECHNICAL INDICATORS:
-- RSI ({trade_data.get('rsi_period', 14)}): {trade_data.get('rsi_value', 'N/A')} → Signal: {trade_data.get('rsi_signal', 'N/A')}
+- RSI ({rsi_period}): {trade_data.get('rsi_value', 'N/A')} → Signal: {trade_data.get('rsi_signal', 'N/A')}
 - MACD: Signal = {trade_data.get('macd_signal', 'N/A')}
 - Bollinger Bands: {trade_data.get('bb_signal', 'N/A')}
 - EMA Cross (9/21): {trade_data.get('ema_signal', 'N/A')}
-- Volume: {trade_data.get('volume_signal', 'N/A')}
+- StochRSI: {trade_data.get('stochrsi_signal', 'N/A')}
 - Indicators Agreeing: {trade_data.get('indicators_agree', 0)}/5
 
 CANDLESTICK PATTERN:
@@ -58,7 +59,6 @@ CANDLESTICK PATTERN:
 
 VOLATILITY:
 - Level: {trade_data.get('volatility_level', 'MEDIUM')}
-- ATR: {trade_data.get('atr', 'N/A')}
 - Tradeable: {trade_data.get('volatility_tradeable', True)}
 
 MARKET SENTIMENT:
@@ -71,7 +71,6 @@ TIMEFRAME AGREEMENT:
 - Primary Direction: {trade_data.get('primary_direction', 'N/A')}
 
 CONFLUENCE SCORE: {trade_data.get('confluence_score', 0)}/100
-CURRENT TIME (WAT): {trade_data.get('current_time', datetime.now().strftime('%H:%M'))}
 ACCOUNT BALANCE: ${trade_data.get('balance', 0):.2f}
 TRADES TODAY: {trade_data.get('trades_today', 0)}
 
@@ -94,22 +93,12 @@ Rules:
 
 
 # ─────────────────────────────────────────────────
-# GROQ AI DECISION
+# GROQ AI DECISION — WITH JSON FALLBACK
 # ─────────────────────────────────────────────────
 
 def get_ai_decision(trade_data: dict) -> dict:
     """
-    Get Groq AI trading decision
-
-    Returns:
-    {
-        "decision":    "CALL" / "PUT" / "SKIP",
-        "confidence":  85,
-        "reasoning":   "Strong bullish momentum...",
-        "risk_level":  "LOW",
-        "key_factors": [...],
-        "approved":    True/False
-    }
+    Get Groq AI trading decision with robust JSON fallback
     """
     try:
         # Block if news or volatility bad
@@ -156,16 +145,51 @@ def get_ai_decision(trade_data: dict) -> dict:
                 }
             ],
             max_tokens  = 500,
-            temperature = 0.1,   # Low temperature = consistent decisions
+            temperature = 0.1,
         )
 
-        # ── Parse response ────────────────────────
+        # ── Parse response with retry ────────────────────────
         content = response.choices[0].message.content.strip()
 
         # Clean JSON if wrapped in backticks
         content = content.replace("```json", "").replace("```", "").strip()
 
-        ai_result = json.loads(content)
+        # Try to parse JSON
+        try:
+            ai_result = json.loads(content)
+        except json.JSONDecodeError:
+            # Retry once: request a cleaned response
+            logger.warning("⚠️ Groq returned malformed JSON. Retrying...")
+            retry_response = client.chat.completions.create(
+                model    = "llama3-70b-8192",
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "You MUST respond with VALID JSON only. No markdown, no backticks, no explanations."
+                    },
+                    {
+                        "role":    "user",
+                        "content": prompt + "\n\nIMPORTANT: Respond with valid JSON only. Example: {\"decision\": \"SKIP\", \"confidence\": 0, \"reasoning\": \"Invalid data\", \"risk_level\": \"HIGH\", \"key_factors\": []}"
+                    }
+                ],
+                max_tokens  = 500,
+                temperature = 0.1,
+            )
+            content = retry_response.choices[0].message.content.strip()
+            content = content.replace("```json", "").replace("```", "").strip()
+            try:
+                ai_result = json.loads(content)
+            except json.JSONDecodeError:
+                # If still malformed, return safe SKIP
+                logger.error("❌ Groq returned malformed JSON after retry. Using safe fallback.")
+                return {
+                    "decision":    "SKIP",
+                    "confidence":  0,
+                    "reasoning":   "AI response parsing failed after retry",
+                    "risk_level":  "HIGH",
+                    "key_factors": ["Parse error"],
+                    "approved":    False,
+                }
 
         decision   = ai_result.get("decision",   "SKIP")
         confidence = ai_result.get("confidence", 0)
@@ -202,16 +226,6 @@ def get_ai_decision(trade_data: dict) -> dict:
 
         return result
 
-    except json.JSONDecodeError as e:
-        logger.error(f"❌ Groq AI returned invalid JSON: {e}")
-        return {
-            "decision":    "SKIP",
-            "confidence":  0,
-            "reasoning":   "AI response parsing failed",
-            "risk_level":  "HIGH",
-            "key_factors": ["Parse error"],
-            "approved":    False,
-        }
     except Exception as e:
         logger.error(f"❌ Groq AI error: {e}")
         return {
@@ -300,7 +314,7 @@ if __name__ == "__main__":
     print("─" * 45)
 
     test_data = {
-        "pair":                "EURUSD-OTC",
+        "pair":                "V75",
         "timeframe":           "5min",
         "expiry":              "5 minutes",
         "rsi_value":           28.5,
@@ -308,7 +322,7 @@ if __name__ == "__main__":
         "macd_signal":         "CALL",
         "bb_signal":           "CALL",
         "ema_signal":          "CALL",
-        "volume_signal":       "CALL",
+        "stochrsi_signal":     "CALL",
         "indicators_agree":    5,
         "pattern":             "Bullish Engulfing",
         "pattern_direction":   "CALL",

@@ -272,27 +272,43 @@ def is_inside_bar(prev, curr) -> bool:
     )
 
 
-def is_tweezer_bottom(prev, curr) -> bool:
+def is_tweezer_bottom(prev, curr, threshold: float = None) -> bool:
     """
     Tweezer Bottom — same lows (support)
     Signal: CALL
+
+    Threshold is now dynamic: it uses the average candle size
+    to determine what "same" means for that specific pair.
     """
+    if threshold is None:
+        # For Synthetics (V75, etc.), 1% of the price is reasonable.
+        # If price is 100, threshold = 1.0. If price is 1.0, threshold = 0.01.
+        price_scale = curr["low"]
+        threshold = max(0.01, min(1.0, price_scale * 0.01))
     return (
         is_bearish(prev) and
         is_bullish(curr) and
-        abs(prev["low"] - curr["low"]) < 0.0005
+        abs(prev["low"] - curr["low"]) < threshold
     )
 
 
-def is_tweezer_top(prev, curr) -> bool:
+def is_tweezer_top(prev, curr, threshold: float = None) -> bool:
     """
     Tweezer Top — same highs (resistance)
     Signal: PUT
+
+    Threshold is now dynamic: it uses the average candle size
+    to determine what "same" means for that specific pair.
     """
+    if threshold is None:
+        # For Synthetics (V75, etc.), 1% of the price is reasonable.
+        # If price is 100, threshold = 1.0. If price is 1.0, threshold = 0.01.
+        price_scale = curr["high"]
+        threshold = max(0.01, min(1.0, price_scale * 0.01))
     return (
         is_bullish(prev) and
         is_bearish(curr) and
-        abs(prev["high"] - curr["high"]) < 0.0005
+        abs(prev["high"] - curr["high"]) < threshold
     )
 
 

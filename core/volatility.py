@@ -11,14 +11,16 @@ from loguru import logger
 
 
 # ─────────────────────────────────────────────────
-# VOLATILITY LEVELS
+# VOLATILITY LEVELS — SYNTHETIC INDICES
 # ─────────────────────────────────────────────────
 
+# These thresholds are calibrated for Synthetic indices (V75, V50, etc.)
+# Synthetic indices move much faster than Forex pairs.
 VOLATILITY_LEVELS = {
-    "low":     0.0003,   # Below this = skip (no movement)
-    "medium":  0.0015,   # Between low and high = TRADE ✅
-    "high":    0.0030,   # Above this = skip (unpredictable)
-    "extreme": 0.0060,   # Above this = EMERGENCY SHUTDOWN
+    "low":     0.10,    # Below this = skip (no movement)
+    "medium":  0.50,    # Between low and high = TRADE ✅
+    "high":    1.50,    # Above this = skip (unpredictable)
+    "extreme": 3.00,    # Above this = EMERGENCY SHUTDOWN
 }
 
 
@@ -145,13 +147,13 @@ def analyze_price_speed(df: pd.DataFrame, period: int = 10) -> dict:
         avg_spd = float(changes.mean())
         max_spd = float(changes.max())
 
-        if avg_spd < 0.0001:
+        if avg_spd < 0.0005:
             speed = "VERY_SLOW"
-        elif avg_spd < 0.0003:
+        elif avg_spd < 0.0010:
             speed = "SLOW"
-        elif avg_spd < 0.0008:
+        elif avg_spd < 0.0020:
             speed = "NORMAL"
-        elif avg_spd < 0.0015:
+        elif avg_spd < 0.0050:
             speed = "FAST"
         else:
             speed = "VERY_FAST"
@@ -183,13 +185,13 @@ def detect_squeeze(df: pd.DataFrame, period: int = 20) -> dict:
         lower = sma - (std * 2)
         width = ((upper - lower) / sma * 100).iloc[-1]
 
-        if width < 0.3:
+        if width < 0.5:
             squeeze = "TIGHT_SQUEEZE"    # Very low volatility
-        elif width < 0.8:
+        elif width < 1.5:
             squeeze = "SQUEEZE"          # Low volatility
-        elif width < 2.0:
+        elif width < 3.0:
             squeeze = "NORMAL"           # Good to trade
-        elif width < 4.0:
+        elif width < 5.0:
             squeeze = "EXPANDING"        # Increasing volatility
         else:
             squeeze = "WIDE"             # High volatility skip
@@ -321,14 +323,14 @@ if __name__ == "__main__":
     print("─" * 45)
 
     import random
-    price = 1.1000
+    price = 100.00  # Start price for V75
     candles = []
     for i in range(50):
-        change = random.uniform(-0.0008, 0.0008)
+        change = random.uniform(-0.50, 0.50)  # Larger moves for V75
         open_  = price
         close  = price + change
-        high   = max(open_, close) + random.uniform(0, 0.0003)
-        low    = min(open_, close) - random.uniform(0, 0.0003)
+        high   = max(open_, close) + random.uniform(0, 0.20)
+        low    = min(open_, close) - random.uniform(0, 0.20)
         candles.append({
             "open": open_, "high": high,
             "low": low,    "close": close,
@@ -337,7 +339,7 @@ if __name__ == "__main__":
         price = close
 
     df     = pd.DataFrame(candles)
-    result = check_volatility(df, "EURUSD-OTC")
+    result = check_volatility(df, "V75")
 
     print(f"\nLevel:     {result['level']}")
     print(f"Tradeable: {result['tradeable']}")

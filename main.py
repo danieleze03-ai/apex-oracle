@@ -290,7 +290,7 @@ def process_signal(pair: str) -> dict:
 
 
 # ─────────────────────────────────────────────────
-# TRADE EXECUTOR
+# TRADE EXECUTOR — NON-BLOCKING
 # ─────────────────────────────────────────────────
 
 def execute_trade(signal: dict) -> bool:
@@ -298,10 +298,8 @@ def execute_trade(signal: dict) -> bool:
     Execute a trade based on signal
     1. Calculate stake
     2. Place live trade
-    3. Wait for result
-    4. Log everything
-    5. Update risk state
-    6. Send Telegram alerts
+    3. Spawn background thread to wait for result
+    4. Return immediately so main loop stays responsive
     """
     try:
         pair      = signal["pair"]
@@ -337,7 +335,14 @@ def execute_trade(signal: dict) -> bool:
         trade_result = place_trade(pair, direction, stake, expiry)
 
         if not trade_result["success"]:
-            logger.error(f"❌ Trade failed: {trade_result.get('error')}")
+            error_msg = trade_result.get('error', 'Unknown error')
+            # Handle specific Deriv API errors gracefully
+            if "Trading is not offered for this duration" in error_msg:
+                logger.warning(f"⏳ Deriv does not allow {expiry}min expiry on {pair}. Try 5min.")
+            elif "closed" in error_msg.lower():
+                logger.warning(f"🔒 {pair} is closed for trading.")
+            else:
+                logger.error(f"❌ Trade failed: {error_msg}")
             return False
 
         trade_id = trade_result["trade_id"]
@@ -364,65 +369,67 @@ def execute_trade(signal: dict) -> bool:
         }
         update_status("last_trade", bot_state["last_trade"])
 
-        # ── Wait for expiry ───────────────────────
-        wait_seconds = (expiry * 60) + 5
-        logger.info(f"⏳ Waiting {wait_seconds}s for result...")
-        time.sleep(wait_seconds)
+        # ── Spawn background thread to handle result ──
+        def wait_for_result():
+            wait_seconds = (expiry * 60) + 5
+            logger.info(f"⏳ Waiting {wait_seconds}s for result in background...")
+            time.sleep(wait_seconds)
 
-        # ── Check result ──────────────────────────
-        result      = check_trade_result(trade_id)
-        outcome     = result["result"]
-        profit      = result["profit"]
-        new_balance = get_balance()
+            result = check_trade_result(trade_id)
+            outcome = result["result"]
+            profit = result["profit"]
+            new_balance = get_balance()
 
-        # ── Update risk state ─────────────────────
-        update_after_trade(outcome, profit)
+            # Update risk state
+            update_after_trade(outcome, profit)
 
-        # ── Update counters ───────────────────────
-        if outcome == "WIN":
-            bot_state["wins_today"] += 1
-            update_status("wins_today", bot_state["wins_today"])
-        else:
-            bot_state["losses_today"] += 1
-            update_status("losses_today", bot_state["losses_today"])
+            # Update counters
+            if outcome == "WIN":
+                bot_state["wins_today"] += 1
+                update_status("wins_today", bot_state["wins_today"])
+            else:
+                bot_state["losses_today"] += 1
+                update_status("losses_today", bot_state["losses_today"])
 
-        bot_state["balance"] = new_balance
-        update_status("balance", new_balance)
+            bot_state["balance"] = new_balance
+            update_status("balance", new_balance)
 
-        # ── Log to database ───────────────────────
-        log_trade({
-            "pair":            pair,
-            "direction":       direction,
-            "stake":           stake,
-            "expiry_seconds":  expiry * 60,
-            "confidence":      signal["confidence"],
-            "result":          outcome,
-            "profit_loss":     profit,
-            "balance_after":   new_balance,
-            "pattern":         signal.get("pattern", "None"),
-            "sentiment_score": signal.get("sentiment", 0),
-            "groq_reasoning":  signal.get("ai_reasoning", ""),
-            "mode":            bot_state["mode"],
-        })
+            # Log to database
+            log_trade({
+                "pair":            pair,
+                "direction":       direction,
+                "stake":           stake,
+                "expiry_seconds":  expiry * 60,
+                "confidence":      signal["confidence"],
+                "result":          outcome,
+                "profit_loss":     profit,
+                "balance_after":   new_balance,
+                "pattern":         signal.get("pattern", "None"),
+                "sentiment_score": signal.get("sentiment", 0),
+                "groq_reasoning":  signal.get("ai_reasoning", ""),
+                "mode":            bot_state["mode"],
+            })
 
-        # ── Send result alert ─────────────────────
-        asyncio.run(send_trade_result({
-            "pair":          pair,
-            "direction":     direction,
-            "result":        outcome,
-            "profit_loss":   profit,
-            "balance_after": new_balance,
-        }))
+            # Send result alert
+            asyncio.run(send_trade_result({
+                "pair":          pair,
+                "direction":     direction,
+                "result":        outcome,
+                "profit_loss":   profit,
+                "balance_after": new_balance,
+            }))
 
-        # ── Record live result for shadow ─────────
-        record_live_result(trade_id, outcome, profit)
+            # Record live result for shadow
+            record_live_result(trade_id, outcome, profit)
 
-        logger.info(
-            f"{'✅ WIN' if outcome == 'WIN' else '❌ LOSS'} | "
-            f"{pair} {direction} | "
-            f"P&L: ${profit:.2f} | "
-            f"Balance: ${new_balance:.2f}"
-        )
+            logger.info(
+                f"{'✅ WIN' if outcome == 'WIN' else '❌ LOSS'} | "
+                f"{pair} {direction} | "
+                f"P&L: ${profit:.2f} | "
+                f"Balance: ${new_balance:.2f}"
+            )
+
+        threading.Thread(target=wait_for_result, daemon=True).start()
 
         return True
 
@@ -578,6 +585,13 @@ def trading_loop():
 def startup():
     """Initialize all systems and start bot"""
 
+    # ── Check all required environment variables ──
+    required_vars = ["DERIV_API_TOKEN", "GROQ_API_KEY", "TELEGRAM_BOT_TOKEN", "SUPABASE_URL", "SUPABASE_KEY"]
+    missing = [var for var in required_vars if not os.getenv(var)]
+    if missing:
+        logger.critical(f"❌ Missing environment variables: {', '.join(missing)}")
+        return False
+
     # ── Setup logging ─────────────────────────────
     setup_logger(os.getenv("LOG_LEVEL", "INFO"))
 
@@ -643,7 +657,11 @@ def startup():
             trade_result = await loop.run_in_executor(None, place_trade, pair, direction, stake, expiry)
 
             if not trade_result.get("success"):
-                await update.message.reply_text(f"❌ Trade failed: {trade_result.get('error')}")
+                error_msg = trade_result.get('error', 'Unknown error')
+                if "Trading is not offered for this duration" in error_msg:
+                    await update.message.reply_text(f"❌ Trade failed: {error_msg}\n\nTry expiry=5 instead.")
+                else:
+                    await update.message.reply_text(f"❌ Trade failed: {error_msg}")
                 return
 
             trade_id = trade_result.get("trade_id")

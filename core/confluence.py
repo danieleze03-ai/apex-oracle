@@ -28,14 +28,6 @@ MIN_CONFIDENCE = 75
 
 
 # ─────────────────────────────────────────────────
-# PAIR CONFIG — Weekend auto-switch
-# ─────────────────────────────────────────────────
-
-FOREX_PAIRS = ["EURUSD", "GBPUSD", "GBPJPY", "EURGBP", "USDJPY"]
-SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10"]
-
-
-# ─────────────────────────────────────────────────
 # TIMEFRAME SCORER
 # ─────────────────────────────────────────────────
 
@@ -368,7 +360,7 @@ if __name__ == "__main__":
         "60": make_candles(100),
     }
 
-    result = calculate_confluence(primary, tf_data, "EURUSD")
+    result = calculate_confluence(primary, tf_data, "V75")
 
     print(f"\nDirection:  {result['direction']}")
     print(f"Confidence: {result['confidence']}%")

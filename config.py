@@ -19,11 +19,10 @@ SYMBOL      = "⚡"
 MOTTO       = "We Don't Predict. We Know."
 
 # ─────────────────────────────────────────────────
-# IQ OPTION CREDENTIALS
+# DERIV CREDENTIALS
 # ─────────────────────────────────────────────────
-IQ_EMAIL    = os.getenv("IQ_OPTION_EMAIL")
-IQ_PASSWORD = os.getenv("IQ_OPTION_PASSWORD")
-TRADE_MODE  = os.getenv("TRADING_MODE", "PRACTICE")  # PRACTICE or REAL
+DERIV_API_TOKEN = os.getenv("DERIV_API_TOKEN")  # ✅ Replaced IQ Option
+TRADE_MODE      = os.getenv("TRADING_MODE", "PRACTICE")  # PRACTICE or REAL
 
 # ─────────────────────────────────────────────────
 # GROQ AI (FREE)
@@ -45,25 +44,17 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # ─────────────────────────────────────────────────
-# TRADING PAIRS
+# TRADING PAIRS — SYNTHETIC ONLY
 # ─────────────────────────────────────────────────
-PRIMARY_PAIRS = [
-    "EURUSD-OTC",   # Best liquid OTC pair
-    "GBPUSD-OTC",   # Strong trends
+SYNTHETIC_PAIRS = [
+    "V75",
+    "V50",
+    "V25",
+    "V10",
+    "V100",
+    "V60",
+    "V90",
 ]
-
-MARKET_HOURS_PAIRS = [
-    "EURUSD",       # Real market hours only
-    "GBPUSD",       # Real market hours only
-]
-
-BACKUP_PAIRS = [
-    "GBPJPY-OTC",
-    "EURGBP-OTC",
-    "USDJPY-OTC",
-]
-
-ALL_PAIRS = PRIMARY_PAIRS + MARKET_HOURS_PAIRS + BACKUP_PAIRS
 
 # Max pairs running simultaneously
 MAX_ACTIVE_PAIRS = 2
@@ -130,13 +121,13 @@ CONFIDENCE = {
 GROQ_MIN_CONFIDENCE = 80
 
 # ─────────────────────────────────────────────────
-# VOLATILITY THERMOMETER
+# VOLATILITY THERMOMETER — SYNTHETIC
 # ─────────────────────────────────────────────────
 VOLATILITY_LEVELS = {
-    "low":      0.0003,   # Below this = skip (no movement)
-    "medium":   0.0015,   # Between low and high = TRADE ✅
-    "high":     0.003,    # Above this = skip
-    "extreme":  0.006,    # Above this = EMERGENCY SHUTDOWN
+    "low":      0.10,    # Below this = skip (no movement)
+    "medium":   0.50,    # Between low and high = TRADE ✅
+    "high":     1.50,    # Above this = skip
+    "extreme":  3.00,    # Above this = EMERGENCY SHUTDOWN
 }
 
 # Wick ratio threshold (large wick = rejection)
@@ -159,18 +150,14 @@ KELLY_SAFETY_FACTOR     = 0.25     # Use only 25% of full Kelly
 # ─────────────────────────────────────────────────
 # PRICE MANIPULATION GUARD
 # ─────────────────────────────────────────────────
-MAX_PRICE_DIFFERENCE    = 0.0005   # 0.5 pips max difference IQ vs Yahoo
+MAX_PRICE_DIFFERENCE    = 0.0005   # 0.5 pips max difference (Forex only)
 
 # ─────────────────────────────────────────────────
-# SESSION TIMES (WAT = UTC+1)
+# SESSION TIMES — REMOVED (SYNTHETIC 24/7)
 # ─────────────────────────────────────────────────
 TIMEZONE = os.getenv("TIMEZONE", "Africa/Lagos")
 
-TRADING_SESSIONS = {
-    "london_open":  {"start": "08:00", "end": "10:00"},
-    "overlap":      {"start": "14:00", "end": "17:00"},   # 🔥 BEST
-    "ny_close":     {"start": "19:00", "end": "21:00"},
-}
+TRADING_SESSIONS = {}  # No sessions for Synthetic 24/7
 
 # Block trading this many minutes before/after news
 NEWS_BLOCK_MINUTES = 30
@@ -199,8 +186,7 @@ GDRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
 def validate_config():
     """Check all required environment variables are set"""
     required = {
-        "IQ_OPTION_EMAIL":    IQ_EMAIL,
-        "IQ_OPTION_PASSWORD": IQ_PASSWORD,
+        "DERIV_API_TOKEN":    DERIV_API_TOKEN,    # ✅ Changed from IQ Option
         "GROQ_API_KEY":       GROQ_API_KEY,
         "TELEGRAM_BOT_TOKEN": TELEGRAM_TOKEN,
         "TELEGRAM_CHAT_ID":   TELEGRAM_CHAT_ID,
@@ -223,7 +209,7 @@ if __name__ == "__main__":
     print(f"\n{SYMBOL} {BOT_NAME} v{VERSION}")
     print(f"'{MOTTO}'")
     print(f"\nTrading Mode:  {TRADE_MODE}")
-    print(f"Primary Pairs: {PRIMARY_PAIRS}")
+    print(f"Primary Pairs: {SYNTHETIC_PAIRS}")
     print(f"Timeframes:    {TIMEFRAMES}")
     print(f"Stake:         {STAKE_PERCENT}% per trade")
     print(f"Max Trades:    {MAX_DAILY_TRADES}/day")

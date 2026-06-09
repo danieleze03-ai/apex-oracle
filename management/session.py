@@ -33,81 +33,40 @@ def is_weekend() -> bool:
 
 
 # ─────────────────────────────────────────────────
-# TRADING SESSIONS
+# TRADING SESSIONS (DISABLED — SYNTHETIC ONLY)
 # ─────────────────────────────────────────────────
 
 SESSIONS = {
-    "london_open": {
-        "start":   time(8,  0),
-        "end":     time(10, 0),
-        "label":   "London Open",
-        "quality": "GOOD",
-    },
-    "overlap": {
-        "start":   time(14, 0),
-        "end":     time(17, 0),
-        "label":   "London/NY Overlap",
+    "synthetic_24_7": {
+        "start":   time(0,  0),
+        "end":     time(23, 59),
+        "label":   "Synthetic 24/7",
         "quality": "BEST",
-    },
-    "ny_close": {
-        "start":   time(19, 0),
-        "end":     time(21, 0),
-        "label":   "NY Close",
-        "quality": "GOOD",
     },
 }
 
-# Avoid these times completely
-AVOID_TIMES = [
-    {"start": time(0,  0), "end": time(7, 59), "reason": "Asian session"},
-    {"start": time(18, 0), "end": time(23, 59), "reason": "Friday close risk"},
-]
+# Avoid times (all removed — Synthetics always available)
+AVOID_TIMES = []
 
 
 # ─────────────────────────────────────────────────
-# TRADING PAIRS — DERIV.COM
+# TRADING PAIRS — DERIV.COM (SYNTHETIC ONLY)
 # ─────────────────────────────────────────────────
 
-# Weekday forex pairs (Deriv)
-PRIMARY_PAIRS = ["EURUSD", "GBPUSD"]
-BACKUP_PAIRS  = ["GBPJPY", "EURGBP", "USDJPY"]
-
-# Weekend synthetic indices (Deriv — 24/7)
-SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10"]
+SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10", "V100", "V60", "V90"]
 
 
 def get_active_pairs() -> list:
     """
-    Get pairs to trade based on current session
-
-    Weekdays (market hours) → Forex pairs
-    Weekends                → Synthetic indices (24/7)
+    Get pairs to trade — Synthetic indices only (24/7)
     """
-    current = now_wat()
-    weekend = is_weekend()
-
-    # Weekend — synthetic indices only
-    if weekend:
-        logger.debug("📅 Weekend — using Synthetic indices (V75/V50/V25/V10)")
-        return SYNTHETIC_PAIRS
-
-    # Market hours (8am-10pm WAT) — use forex pairs
-    market_open  = time(8,  0)
-    market_close = time(22, 0)
-
-    if market_open <= current.time() <= market_close:
-        logger.debug("🕐 Market hours — using Forex pairs")
-        return PRIMARY_PAIRS + BACKUP_PAIRS
-
-    # Off hours on weekday — synthetic as fallback
-    logger.debug("🌙 Off hours — using Synthetic indices")
+    logger.debug("📈 Synthetic-only mode — all pairs active 24/7")
     return SYNTHETIC_PAIRS
 
 
 def get_best_pair() -> str:
     """Get the single best pair for current conditions"""
-    pairs = get_active_pairs()
-    return pairs[0] if pairs else "EURUSD"
+    return "V75"  # Always V75 for Synthetic-only
 
 
 # ─────────────────────────────────────────────────
@@ -117,44 +76,13 @@ def get_best_pair() -> str:
 def get_current_session() -> dict:
     """
     Get current trading session info
-
-    Returns:
-    {
-        "session":  "London/NY Overlap",
-        "quality":  "BEST",
-        "active":   True,
-        "next":     "NY Close at 19:00"
-    }
+    Synthetic-only — always active.
     """
-    current = now_wat()
-    weekend = is_weekend()
-
-    for key, session in SESSIONS.items():
-        if session["start"] <= current.time() <= session["end"]:
-            return {
-                "session": session["label"],
-                "quality": session["quality"],
-                "active":  True,
-                "key":     key,
-            }
-
-    # Find next session
-    next_session = None
-    for key, session in SESSIONS.items():
-        if session["start"] > current.time():
-            next_session = f"{session['label']} at {session['start'].strftime('%H:%M')}"
-            break
-
-    if not next_session:
-        first = list(SESSIONS.values())[0]
-        next_session = f"{first['label']} at {first['start'].strftime('%H:%M')} tomorrow"
-
     return {
-        "session": "Outside trading hours",
-        "quality": "NONE",
-        "active":  False,
-        "next":    next_session,
-        "weekend": weekend,
+        "session": "Synthetic 24/7",
+        "quality": "BEST",
+        "active":  True,
+        "key":     "synthetic_24_7",
     }
 
 
@@ -165,63 +93,13 @@ def get_current_session() -> dict:
 def is_trading_time() -> dict:
     """
     Master check — should we be trading right now?
-
-    Returns:
-    {
-        "allowed":  True/False,
-        "reason":   "explanation",
-        "session":  "London Open",
-        "quality":  "GOOD"
-    }
+    Synthetic-only — always allowed.
     """
-    current = now_wat()
-    weekend = is_weekend()
-
-    # ── Friday after 6PM — avoid ──────────────────
-    if current.weekday() == 4 and current.time() >= time(18, 0):
-        return {
-            "allowed": False,
-            "reason":  "Friday after 18:00 — weekend gap risk",
-            "session": "Weekend approaching",
-            "quality": "NONE",
-        }
-
-    # ── Asian session — avoid on weekdays ────────
-    if not weekend:
-        if current.time() < time(7, 59):
-            return {
-                "allowed": False,
-                "reason":  "Asian session — low volatility/choppy",
-                "session": "Asian Session",
-                "quality": "NONE",
-            }
-
-    # ── Check active sessions ─────────────────────
-    session = get_current_session()
-
-    if session["active"]:
-        return {
-            "allowed": True,
-            "reason":  f"✅ {session['session']} is active",
-            "session": session["session"],
-            "quality": session["quality"],
-        }
-
-    # ── Weekend — Synthetic indices available 24/7 ─
-    if weekend:
-        return {
-            "allowed": True,
-            "reason":  "Weekend — Synthetic indices available 24/7",
-            "session": "Weekend Synthetic",
-            "quality": "MODERATE",
-        }
-
-    # ── Outside session hours ─────────────────────
     return {
-        "allowed": False,
-        "reason":  f"Outside trading hours. Next: {session.get('next', 'soon')}",
-        "session": "No Active Session",
-        "quality": "NONE",
+        "allowed": True,
+        "reason":  "Synthetic indices available 24/7",
+        "session": "Synthetic 24/7",
+        "quality": "BEST",
     }
 
 
@@ -272,16 +150,9 @@ def is_news_blocked() -> dict:
 def get_optimal_expiry(timeframe: int = 5) -> int:
     """
     Get optimal expiry time in minutes
-    Rule: expiry = same as analysis timeframe
+    Synthetic-only — default 5 minutes.
     """
-    session = get_current_session()
-
-    if session.get("quality") == "BEST":
-        return 5
-    elif session.get("quality") == "GOOD":
-        return 5
-    else:
-        return 5
+    return 5
 
 
 def is_signal_valid(signal_age_seconds: int) -> bool:
@@ -308,8 +179,8 @@ def get_session_summary() -> dict:
     return {
         "current_time":    current.strftime("%H:%M WAT"),
         "day":             current.strftime("%A"),
-        "session":         session.get("session", "Unknown"),
-        "session_quality": session.get("quality", "NONE"),
+        "session":         session.get("session", "Synthetic 24/7"),
+        "session_quality": session.get("quality", "BEST"),
         "trading_allowed": trading["allowed"],
         "trading_reason":  trading["reason"],
         "news_blocked":    news_block["blocked"],
