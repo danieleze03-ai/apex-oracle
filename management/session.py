@@ -1,7 +1,7 @@
 # ⚡ APEX ORACLE — AO-1.0
 # Session Management System
 # Controls trading windows, pair selection,
-# and automatically switches OTC vs regular pairs
+# and automatically switches Synthetic vs Forex pairs
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
 
@@ -38,76 +38,76 @@ def is_weekend() -> bool:
 
 SESSIONS = {
     "london_open": {
-        "start":  time(8,  0),
-        "end":    time(10, 0),
-        "label":  "London Open",
+        "start":   time(8,  0),
+        "end":     time(10, 0),
+        "label":   "London Open",
         "quality": "GOOD",
     },
     "overlap": {
-        "start":  time(14, 0),
-        "end":    time(17, 0),
-        "label":  "London/NY Overlap",
+        "start":   time(14, 0),
+        "end":     time(17, 0),
+        "label":   "London/NY Overlap",
         "quality": "BEST",
     },
     "ny_close": {
-        "start":  time(19, 0),
-        "end":    time(21, 0),
-        "label":  "NY Close",
+        "start":   time(19, 0),
+        "end":     time(21, 0),
+        "label":   "NY Close",
         "quality": "GOOD",
     },
 }
 
 # Avoid these times completely
 AVOID_TIMES = [
-    # Asian session (choppy/low volume)
     {"start": time(0,  0), "end": time(7, 59), "reason": "Asian session"},
-    # Friday close (weekend gap risk)
     {"start": time(18, 0), "end": time(23, 59), "reason": "Friday close risk"},
 ]
 
 
 # ─────────────────────────────────────────────────
-# TRADING PAIRS
+# TRADING PAIRS — DERIV.COM
 # ─────────────────────────────────────────────────
 
-PRIMARY_PAIRS = ["EURUSD-OTC", "GBPUSD-OTC"]
-MARKET_PAIRS  = ["EURUSD",     "GBPUSD"]
-BACKUP_PAIRS  = ["GBPJPY-OTC", "EURGBP-OTC", "USDJPY-OTC"]
+# Weekday forex pairs (Deriv)
+PRIMARY_PAIRS = ["EURUSD", "GBPUSD"]
+BACKUP_PAIRS  = ["GBPJPY", "EURGBP", "USDJPY"]
+
+# Weekend synthetic indices (Deriv — 24/7)
+SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10"]
 
 
 def get_active_pairs() -> list:
     """
     Get pairs to trade based on current session
 
-    Weekday market hours  → Real pairs + OTC
-    Weekday off hours     → OTC pairs only
-    Weekend               → OTC pairs only
+    Weekdays (market hours) → Forex pairs
+    Weekends                → Synthetic indices (24/7)
     """
     current = current_time_wat()
     weekend = is_weekend()
 
-    # Weekend — OTC only
+    # Weekend — synthetic indices only
     if weekend:
-        logger.debug("📅 Weekend — using OTC pairs only")
-        return PRIMARY_PAIRS
+        logger.debug("📅 Weekend — using Synthetic indices (V75/V50/V25/V10)")
+        return SYNTHETIC_PAIRS
 
-    # Market hours (8am-10pm WAT) — use real pairs
+    # Market hours (8am-10pm WAT) — use forex pairs
     market_open  = time(8,  0)
     market_close = time(22, 0)
 
-    if market_open <= current <= market_close:
-        logger.debug("🕐 Market hours — using real + OTC pairs")
-        return MARKET_PAIRS + PRIMARY_PAIRS
+    if market_open <= current.time() <= market_close:
+        logger.debug("🕐 Market hours — using Forex pairs")
+        return PRIMARY_PAIRS + BACKUP_PAIRS
 
-    # Off hours — OTC only
-    logger.debug("🌙 Off hours — using OTC pairs only")
-    return PRIMARY_PAIRS
+    # Off hours on weekday — synthetic as fallback
+    logger.debug("🌙 Off hours — using Synthetic indices")
+    return SYNTHETIC_PAIRS
 
 
 def get_best_pair() -> str:
     """Get the single best pair for current conditions"""
     pairs = get_active_pairs()
-    return pairs[0] if pairs else "EURUSD-OTC"
+    return pairs[0] if pairs else "EURUSD"
 
 
 # ─────────────────────────────────────────────────
@@ -120,13 +120,13 @@ def get_current_session() -> dict:
 
     Returns:
     {
-        "session":   "London/NY Overlap",
-        "quality":   "BEST",
-        "active":    True,
-        "next":      "NY Close at 19:00"
+        "session":  "London/NY Overlap",
+        "quality":  "BEST",
+        "active":   True,
+        "next":     "NY Close at 19:00"
     }
     """
-    current = current_time_wat()
+    current = now_wat()
     weekend = is_weekend()
 
     for key, session in SESSIONS.items():
@@ -174,7 +174,7 @@ def is_trading_time() -> dict:
         "quality":  "GOOD"
     }
     """
-    current = current_time_wat()
+    current = now_wat()
     weekend = is_weekend()
 
     # ── Friday after 6PM — avoid ──────────────────
@@ -207,12 +207,12 @@ def is_trading_time() -> dict:
             "quality": session["quality"],
         }
 
-    # ── Weekend — OTC pairs available ─────────────
+    # ── Weekend — Synthetic indices available 24/7 ─
     if weekend:
         return {
             "allowed": True,
-            "reason":  "Weekend — OTC pairs available 24/7",
-            "session": "Weekend OTC",
+            "reason":  "Weekend — Synthetic indices available 24/7",
+            "session": "Weekend Synthetic",
             "quality": "MODERATE",
         }
 
@@ -229,7 +229,6 @@ def is_trading_time() -> dict:
 # NEWS BLOCK CHECKER
 # ─────────────────────────────────────────────────
 
-# Store news block times
 _news_blocks = []
 
 
@@ -252,12 +251,11 @@ def is_news_blocked() -> dict:
     global _news_blocks
     now = now_wat()
 
-    # Remove expired blocks
     _news_blocks = [b for b in _news_blocks if b["block_until"] > now]
 
     if _news_blocks:
-        block    = _news_blocks[0]
-        remaining= (block["block_until"] - now).seconds // 60
+        block     = _news_blocks[0]
+        remaining = (block["block_until"] - now).seconds // 60
         return {
             "blocked": True,
             "reason":  f"News block: {block['event']} — {remaining} mins remaining",
@@ -275,20 +273,13 @@ def get_optimal_expiry(timeframe: int = 5) -> int:
     """
     Get optimal expiry time in minutes
     Rule: expiry = same as analysis timeframe
-
-    Also validates signal hasn't expired
     """
     session = get_current_session()
 
-    # During best session use 5min expiry
     if session.get("quality") == "BEST":
         return 5
-
-    # During good sessions
     elif session.get("quality") == "GOOD":
         return 5
-
-    # Weekend/moderate — slightly longer
     else:
         return 5
 
@@ -308,24 +299,24 @@ def is_signal_valid(signal_age_seconds: int) -> bool:
 
 def get_session_summary() -> dict:
     """Full session status for Telegram /status command"""
-    current     = now_wat()
-    session     = get_current_session()
-    trading     = is_trading_time()
-    news_block  = is_news_blocked()
-    pairs       = get_active_pairs()
+    current    = now_wat()
+    session    = get_current_session()
+    trading    = is_trading_time()
+    news_block = is_news_blocked()
+    pairs      = get_active_pairs()
 
     return {
-        "current_time":   current.strftime("%H:%M WAT"),
-        "day":            current.strftime("%A"),
-        "session":        session.get("session", "Unknown"),
-        "session_quality":session.get("quality", "NONE"),
-        "trading_allowed":trading["allowed"],
-        "trading_reason": trading["reason"],
-        "news_blocked":   news_block["blocked"],
-        "news_reason":    news_block["reason"],
-        "active_pairs":   pairs,
-        "best_pair":      get_best_pair(),
-        "is_weekend":     is_weekend(),
+        "current_time":    current.strftime("%H:%M WAT"),
+        "day":             current.strftime("%A"),
+        "session":         session.get("session", "Unknown"),
+        "session_quality": session.get("quality", "NONE"),
+        "trading_allowed": trading["allowed"],
+        "trading_reason":  trading["reason"],
+        "news_blocked":    news_block["blocked"],
+        "news_reason":     news_block["reason"],
+        "active_pairs":    pairs,
+        "best_pair":       get_best_pair(),
+        "is_weekend":      is_weekend(),
     }
 
 

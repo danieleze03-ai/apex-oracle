@@ -120,7 +120,48 @@ async def _connect_async() -> bool:
         # Set trading mode
         trading_mode = "demo" if mode == "PRACTICE" else "real"
 
-        # Get balance for correct account type
+        # ─────────────────────────────────────────
+        # FIX: Find correct account and switch to it
+        # Deriv has separate virtual/real accounts
+        # We must switch to the right one to get
+        # the correct balance
+        # ─────────────────────────────────────────
+        account_list = auth_data.get("account_list", [])
+        target_type  = "virtual" if trading_mode == "demo" else "real"
+
+        logger.info(f"🔍 Found {len(account_list)} account(s). Looking for {target_type} account...")
+
+        target_account = None
+        for acc in account_list:
+            acc_type = acc.get("account_type", "")
+            logger.debug(f"   → Account: {acc.get('loginid')} | Type: {acc_type}")
+            if acc_type == target_type:
+                target_account = acc
+                break
+
+        if target_account:
+            login_id = target_account["loginid"]
+            logger.info(f"🔄 Switching to {target_type} account: {login_id}")
+
+            # Switch to correct account
+            switch_resp = await _send_receive({"switch_account": login_id})
+
+            if "error" in switch_resp:
+                logger.warning(f"⚠️ Account switch warning: {switch_resp['error'].get('message', 'unknown')}")
+            else:
+                logger.success(f"✅ Switched to account: {login_id}")
+
+            # Re-authorize after switch to get correct balance
+            re_auth = await _send_receive({"authorize": token})
+            if "authorize" in re_auth:
+                auth_data = re_auth["authorize"]
+                logger.info("✅ Re-authorized successfully after account switch")
+            else:
+                logger.warning("⚠️ Re-auth after switch failed — using original auth data")
+        else:
+            logger.warning(f"⚠️ No {target_type} account found in account list — using default")
+
+        # Read balance from correct account
         account_balance = float(auth_data.get("balance", 0.0))
 
         logger.success(f"✅ Connected to Deriv! Mode: {trading_mode.upper()} | Balance: ${account_balance:.2f}")
@@ -335,7 +376,6 @@ def is_pair_open(pair: str) -> bool:
 async def _place_trade_async(pair: str, direction: str, stake: float, expiry: int) -> dict:
     try:
         symbol    = _to_deriv_symbol(pair)
-        # call → CALL, put → PUT (Deriv uses "CALL"/"PUT")
         contract  = "CALL" if direction == "call" else "PUT"
         duration  = expiry * 60  # convert minutes to seconds
 
