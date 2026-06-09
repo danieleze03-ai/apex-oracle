@@ -204,7 +204,7 @@ def is_connected() -> bool:
     try:
         if ws_connection is None:
             return False
-        if ws_connection.closed:
+        if not ws_connection.open:
             return False
         return True   # ← no more manual ping here
     except:
