@@ -1,6 +1,6 @@
 # ⚡ APEX ORACLE — AO-1.0
 # Groq AI Brain — Intelligent Trade Decision
-# Uses Groq's FREE LLaMA3 model to reason like
+# Uses Groq's FREE LLaMA model to reason like
 # a professional trader before every trade
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
@@ -37,10 +37,10 @@ def build_trade_prompt(trade_data: dict) -> str:
     Gives it all market context to make decision
     """
     rsi_period = trade_data.get('rsi_period', 14)
-    return f"""You are APEX ORACLE, an expert binary options trading AI.
+    return f"""You are APEX ORACLE, an expert binary options trading AI specializing in Synthetic Indices.
 Analyze this market data and make a trading decision.
 
-TRADING PAIR: {trade_data.get('pair', 'V75')}
+TRADING PAIR: {trade_data.get('pair', 'V75')} (Synthetic Index — trades 24/7, no news impact)
 TIMEFRAME: {trade_data.get('timeframe', '5min')}
 EXPIRY: {trade_data.get('expiry', '5 minutes')}
 
@@ -61,11 +61,6 @@ VOLATILITY:
 - Level: {trade_data.get('volatility_level', 'MEDIUM')}
 - Tradeable: {trade_data.get('volatility_tradeable', True)}
 
-MARKET SENTIMENT:
-- Score: {trade_data.get('sentiment_score', 0)} (-100 bearish to +100 bullish)
-- Bias: {trade_data.get('sentiment_bias', 'NEUTRAL')}
-- High Impact News: {trade_data.get('news_blocked', False)}
-
 TIMEFRAME AGREEMENT:
 - Timeframes Agreeing: {trade_data.get('tf_agreements', 0)}/4
 - Primary Direction: {trade_data.get('primary_direction', 'N/A')}
@@ -85,55 +80,36 @@ Respond ONLY with valid JSON in this exact format:
 }}
 
 Rules:
-- Only say CALL or PUT if confidence >= 80
-- Say SKIP if any major red flags
+- Only say CALL or PUT if confidence >= 70
+- Say SKIP if confluence score is below 65
 - Be conservative — protecting capital is priority
-- Never trade if news_blocked is True
-- Never trade if volatility_tradeable is False"""
+- This is a Synthetic Index — ignore news, focus only on technicals"""
 
 
 # ─────────────────────────────────────────────────
 # GROQ AI DECISION — WITH JSON FALLBACK
 # ─────────────────────────────────────────────────
 
+GROQ_MODEL = "llama3-8b-8192"  # ← Updated model (llama3-70b-8192 decommissioned)
+
+
 def get_ai_decision(trade_data: dict) -> dict:
     """
     Get Groq AI trading decision with robust JSON fallback
     """
     try:
-        # Block if news or volatility bad
-        if trade_data.get("news_blocked", False):
-            return {
-                "decision":    "SKIP",
-                "confidence":  0,
-                "reasoning":   "High impact news detected. Trading blocked.",
-                "risk_level":  "HIGH",
-                "key_factors": ["High impact news"],
-                "approved":    False,
-            }
-
-        if not trade_data.get("volatility_tradeable", True):
-            return {
-                "decision":    "SKIP",
-                "confidence":  0,
-                "reasoning":   "Volatility conditions not suitable for trading.",
-                "risk_level":  "HIGH",
-                "key_factors": ["Bad volatility"],
-                "approved":    False,
-            }
-
         client = get_groq_client()
         prompt = build_trade_prompt(trade_data)
 
         logger.info("🧠 Asking Groq AI for trade decision...")
 
         response = client.chat.completions.create(
-            model    = "llama3-70b-8192",
+            model    = GROQ_MODEL,
             messages = [
                 {
                     "role": "system",
                     "content": (
-                        "You are an expert binary options trading AI. "
+                        "You are an expert Synthetic Index trading AI. "
                         "You ALWAYS respond with valid JSON only. "
                         "No explanations outside the JSON. "
                         "Be conservative and protect capital."
@@ -148,27 +124,23 @@ def get_ai_decision(trade_data: dict) -> dict:
             temperature = 0.1,
         )
 
-        # ── Parse response with retry ────────────────────────
+        # ── Parse response ───────────────────────
         content = response.choices[0].message.content.strip()
-
-        # Clean JSON if wrapped in backticks
         content = content.replace("```json", "").replace("```", "").strip()
 
-        # Try to parse JSON
         try:
             ai_result = json.loads(content)
         except json.JSONDecodeError:
-            # Retry once: request a cleaned response
             logger.warning("⚠️ Groq returned malformed JSON. Retrying...")
             retry_response = client.chat.completions.create(
-                model    = "llama3-70b-8192",
+                model    = GROQ_MODEL,
                 messages = [
                     {
                         "role": "system",
                         "content": "You MUST respond with VALID JSON only. No markdown, no backticks, no explanations."
                     },
                     {
-                        "role":    "user",
+                        "role": "user",
                         "content": prompt + "\n\nIMPORTANT: Respond with valid JSON only. Example: {\"decision\": \"SKIP\", \"confidence\": 0, \"reasoning\": \"Invalid data\", \"risk_level\": \"HIGH\", \"key_factors\": []}"
                     }
                 ],
@@ -180,7 +152,6 @@ def get_ai_decision(trade_data: dict) -> dict:
             try:
                 ai_result = json.loads(content)
             except json.JSONDecodeError:
-                # If still malformed, return safe SKIP
                 logger.error("❌ Groq returned malformed JSON after retry. Using safe fallback.")
                 return {
                     "decision":    "SKIP",
@@ -191,20 +162,19 @@ def get_ai_decision(trade_data: dict) -> dict:
                     "approved":    False,
                 }
 
-        decision   = ai_result.get("decision",   "SKIP")
-        confidence = ai_result.get("confidence", 0)
-        reasoning  = ai_result.get("reasoning",  "No reasoning provided")
-        risk_level = ai_result.get("risk_level", "HIGH")
-        key_factors= ai_result.get("key_factors", [])
+        decision    = ai_result.get("decision",    "SKIP")
+        confidence  = ai_result.get("confidence",  0)
+        reasoning   = ai_result.get("reasoning",   "No reasoning provided")
+        risk_level  = ai_result.get("risk_level",  "HIGH")
+        key_factors = ai_result.get("key_factors", [])
 
-        # ── Validate decision ─────────────────────
         if decision not in ["CALL", "PUT", "SKIP"]:
             decision = "SKIP"
 
-        # Only approve if confidence >= 80
+        # Approve if confidence >= 70 (lowered from 80 for synthetics)
         approved = (
             decision in ["CALL", "PUT"] and
-            confidence >= 80
+            confidence >= 70
         )
 
         result = {
@@ -228,13 +198,22 @@ def get_ai_decision(trade_data: dict) -> dict:
 
     except Exception as e:
         logger.error(f"❌ Groq AI error: {e}")
+        # ── Fallback: approve based on confluence score alone ──
+        confluence  = trade_data.get("confluence_score", 0)
+        direction   = trade_data.get("primary_direction", "SKIP")
+        approved    = confluence >= 65 and direction in ["CALL", "PUT"]
+        logger.warning(
+            f"⚠️ Groq unavailable — fallback decision: "
+            f"{'APPROVED' if approved else 'SKIP'} "
+            f"(confluence: {confluence}%)"
+        )
         return {
-            "decision":    "SKIP",
-            "confidence":  0,
-            "reasoning":   f"AI error: {str(e)}",
-            "risk_level":  "HIGH",
-            "key_factors": ["AI unavailable"],
-            "approved":    False,
+            "decision":    direction if approved else "SKIP",
+            "confidence":  confluence,
+            "reasoning":   "Groq unavailable — approved by confluence score alone",
+            "risk_level":  "MEDIUM",
+            "key_factors": ["Groq fallback", f"Confluence: {confluence}%"],
+            "approved":    approved,
         }
 
 
@@ -250,7 +229,7 @@ def analyze_weekly_performance(weekly_stats: dict) -> dict:
     try:
         client = get_groq_client()
 
-        prompt = f"""You are APEX ORACLE's strategy optimizer.
+        prompt = f"""You are APEX ORACLE's strategy optimizer for Synthetic Indices trading.
 Analyze this week's trading performance and suggest improvements.
 
 WEEKLY STATS:
@@ -272,11 +251,11 @@ Respond ONLY with valid JSON:
 }}"""
 
         response = client.chat.completions.create(
-            model    = "llama3-70b-8192",
+            model    = GROQ_MODEL,
             messages = [
                 {
                     "role":    "system",
-                    "content": "You are a trading strategy optimizer. Respond with valid JSON only."
+                    "content": "You are a Synthetic Index trading strategy optimizer. Respond with valid JSON only."
                 },
                 {
                     "role":    "user",
@@ -297,11 +276,11 @@ Respond ONLY with valid JSON:
     except Exception as e:
         logger.error(f"❌ Weekly analysis error: {e}")
         return {
-            "analysis":               "Analysis unavailable",
-            "top_strategy":           "Continue current approach",
-            "avoid_strategy":         "No specific patterns to avoid",
-            "confidence_adjustment":  0,
-            "recommendations":        ["Monitor performance closely"],
+            "analysis":              "Analysis unavailable",
+            "top_strategy":          "Continue current approach",
+            "avoid_strategy":        "No specific patterns to avoid",
+            "confidence_adjustment": 0,
+            "recommendations":       ["Monitor performance closely"],
         }
 
 
@@ -314,29 +293,26 @@ if __name__ == "__main__":
     print("─" * 45)
 
     test_data = {
-        "pair":                "V75",
-        "timeframe":           "5min",
-        "expiry":              "5 minutes",
-        "rsi_value":           28.5,
-        "rsi_signal":          "CALL",
-        "macd_signal":         "CALL",
-        "bb_signal":           "CALL",
-        "ema_signal":          "CALL",
-        "stochrsi_signal":     "CALL",
-        "indicators_agree":    5,
-        "pattern":             "Bullish Engulfing",
-        "pattern_direction":   "CALL",
-        "pattern_strength":    9,
-        "volatility_level":    "MEDIUM",
+        "pair":                 "V75",
+        "timeframe":            "5min",
+        "expiry":               "5 minutes",
+        "rsi_value":            28.5,
+        "rsi_signal":           "CALL",
+        "macd_signal":          "CALL",
+        "bb_signal":            "CALL",
+        "ema_signal":           "CALL",
+        "stochrsi_signal":      "CALL",
+        "indicators_agree":     5,
+        "pattern":              "Bullish Engulfing",
+        "pattern_direction":    "CALL",
+        "pattern_strength":     9,
+        "volatility_level":     "MEDIUM",
         "volatility_tradeable": True,
-        "sentiment_score":     45.0,
-        "sentiment_bias":      "BULLISH",
-        "news_blocked":        False,
-        "tf_agreements":       3,
-        "primary_direction":   "CALL",
-        "confluence_score":    88.0,
-        "balance":             10000.00,
-        "trades_today":        3,
+        "tf_agreements":        3,
+        "primary_direction":    "CALL",
+        "confluence_score":     88.0,
+        "balance":              10000.00,
+        "trades_today":         3,
     }
 
     print("\nSending data to Groq AI...")
