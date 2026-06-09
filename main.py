@@ -504,6 +504,10 @@ def trading_loop():
                 if not reconnect():
                     time.sleep(30)
                     continue
+                balance = get_balance()
+                if balance == 0.0:
+                    time.sleep(30)
+                    continue
 
             bot_state["balance"] = balance
             update_status("balance", balance)
