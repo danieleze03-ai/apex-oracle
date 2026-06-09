@@ -648,7 +648,7 @@ def startup():
             pair = "EURUSD"
             direction = "CALL" if random.randint(0, 1) == 0 else "PUT"
             stake = 1.00
-            expiry = 1
+            expiry = 5
 
             # Run blocking place_trade in executor
             trade_result = await loop.run_in_executor(None, place_trade, pair, direction, stake, expiry)
