@@ -31,21 +31,6 @@ def get_client():
     if not url or not key:
         raise ValueError("❌ Supabase URL or KEY missing from .env!")
 
-    return create_client(url, key)def get_client():
-    """Create and return Supabase client"""
-    from supabase import create_client
-    import os
-
-    # Remove Render/system proxy vars that break supabase httpx internals
-    for var in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]:
-        os.environ.pop(var, None)
-
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
-
-    if not url or not key:
-        raise ValueError("❌ Supabase URL or KEY missing from .env!")
-
     return create_client(url, key)
 
 # ─────────────────────────────────────────────────
