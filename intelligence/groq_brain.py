@@ -8,7 +8,7 @@
 import os
 import json
 from datetime import datetime
-from groq import Groq
+
 from loguru import logger
 from dotenv import load_dotenv
 
@@ -18,7 +18,8 @@ load_dotenv()
 # GROQ CLIENT
 # ─────────────────────────────────────────────────
 
-def get_groq_client() -> Groq:
+def get_groq_client():
+    from groq import Groq
     """Initialize Groq client"""
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
