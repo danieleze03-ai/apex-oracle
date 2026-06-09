@@ -18,9 +18,8 @@ load_dotenv()
 
 def get_client():
     """Create and return Supabase client"""
+    import os
     from supabase import create_client
-    import httpx
-    from supabase.client import ClientOptions
 
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
@@ -28,12 +27,11 @@ def get_client():
     if not url or not key:
         raise ValueError("❌ Supabase URL or KEY missing from .env!")
 
-    options = ClientOptions(
-        httpx_client=httpx.Client(trust_env=False)
-    )
+    # Strip proxy env vars that break supabase-py
+    for var in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]:
+        os.environ.pop(var, None)
 
-    return create_client(url, key, options=options)
-
+    return create_client(url, key)
 
 # ─────────────────────────────────────────────────
 # TABLE SETUP — Run once to create all tables
