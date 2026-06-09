@@ -12,32 +12,32 @@ from loguru import logger
 # CANDLE HELPERS
 # ─────────────────────────────────────────────────
 
-def body_size(candle: pd.Series) -> float:
+def body_size(candle) -> float:
     """Size of candle body"""
     return abs(candle["close"] - candle["open"])
 
 
-def upper_wick(candle: pd.Series) -> float:
+def upper_wick(candle) -> float:
     """Size of upper wick"""
     return candle["high"] - max(candle["close"], candle["open"])
 
 
-def lower_wick(candle: pd.Series) -> float:
+def lower_wick(candle) -> float:
     """Size of lower wick"""
     return min(candle["close"], candle["open"]) - candle["low"]
 
 
-def is_bullish(candle: pd.Series) -> bool:
+def is_bullish(candle) -> bool:
     """Green candle"""
     return candle["close"] > candle["open"]
 
 
-def is_bearish(candle: pd.Series) -> bool:
+def is_bearish(candle) -> bool:
     """Red candle"""
     return candle["close"] < candle["open"]
 
 
-def candle_range(candle: pd.Series) -> float:
+def candle_range(candle) -> float:
     """Full candle range high to low"""
     return candle["high"] - candle["low"]
 
@@ -46,7 +46,7 @@ def candle_range(candle: pd.Series) -> float:
 # SINGLE CANDLE PATTERNS
 # ─────────────────────────────────────────────────
 
-def is_doji(candle: pd.Series, threshold: float = 0.1) -> bool:
+def is_doji(candle, threshold: float = 0.1) -> bool:
     """
     Doji — body very small relative to range
     Signal: Indecision → SKIP
@@ -58,7 +58,7 @@ def is_doji(candle: pd.Series, threshold: float = 0.1) -> bool:
     return (body / rng) < threshold
 
 
-def is_hammer(candle: pd.Series) -> bool:
+def is_hammer(candle) -> bool:
     """
     Hammer — small body, long lower wick
     Signal: Bullish reversal → CALL
@@ -75,7 +75,7 @@ def is_hammer(candle: pd.Series) -> bool:
     )
 
 
-def is_hanging_man(candle: pd.Series) -> bool:
+def is_hanging_man(candle) -> bool:
     """
     Hanging Man — small body, long lower wick (bearish)
     Signal: Bearish reversal → PUT
@@ -92,7 +92,7 @@ def is_hanging_man(candle: pd.Series) -> bool:
     )
 
 
-def is_shooting_star(candle: pd.Series) -> bool:
+def is_shooting_star(candle) -> bool:
     """
     Shooting Star — small body, long upper wick
     Signal: Bearish reversal → PUT
@@ -108,7 +108,7 @@ def is_shooting_star(candle: pd.Series) -> bool:
     )
 
 
-def is_inverted_hammer(candle: pd.Series) -> bool:
+def is_inverted_hammer(candle) -> bool:
     """
     Inverted Hammer — small body, long upper wick (bullish)
     Signal: Bullish reversal → CALL
@@ -125,7 +125,7 @@ def is_inverted_hammer(candle: pd.Series) -> bool:
     )
 
 
-def is_pin_bar_bullish(candle: pd.Series) -> bool:
+def is_pin_bar_bullish(candle) -> bool:
     """
     Bullish Pin Bar — strong rejection of lower prices
     Signal: Strong CALL
@@ -141,7 +141,7 @@ def is_pin_bar_bullish(candle: pd.Series) -> bool:
     )
 
 
-def is_pin_bar_bearish(candle: pd.Series) -> bool:
+def is_pin_bar_bearish(candle) -> bool:
     """
     Bearish Pin Bar — strong rejection of higher prices
     Signal: Strong PUT
@@ -157,7 +157,7 @@ def is_pin_bar_bearish(candle: pd.Series) -> bool:
     )
 
 
-def is_marubozu_bullish(candle: pd.Series) -> bool:
+def is_marubozu_bullish(candle) -> bool:
     """
     Bullish Marubozu — full body, no wicks
     Signal: Strong momentum CALL
@@ -172,7 +172,7 @@ def is_marubozu_bullish(candle: pd.Series) -> bool:
     )
 
 
-def is_marubozu_bearish(candle: pd.Series) -> bool:
+def is_marubozu_bearish(candle) -> bool:
     """
     Bearish Marubozu — full body, no wicks
     Signal: Strong momentum PUT
@@ -187,7 +187,7 @@ def is_marubozu_bearish(candle: pd.Series) -> bool:
     )
 
 
-def is_spinning_top(candle: pd.Series) -> bool:
+def is_spinning_top(candle) -> bool:
     """
     Spinning Top — small body, equal wicks
     Signal: Indecision → SKIP
@@ -209,7 +209,7 @@ def is_spinning_top(candle: pd.Series) -> bool:
 # TWO CANDLE PATTERNS
 # ─────────────────────────────────────────────────
 
-def is_bullish_engulfing(prev: pd.Series, curr: pd.Series) -> bool:
+def is_bullish_engulfing(prev, curr) -> bool:
     """
     Bullish Engulfing — green candle engulfs red
     Signal: Strong CALL
@@ -222,7 +222,7 @@ def is_bullish_engulfing(prev: pd.Series, curr: pd.Series) -> bool:
     )
 
 
-def is_bearish_engulfing(prev: pd.Series, curr: pd.Series) -> bool:
+def is_bearish_engulfing(prev, curr) -> bool:
     """
     Bearish Engulfing — red candle engulfs green
     Signal: Strong PUT
@@ -235,7 +235,7 @@ def is_bearish_engulfing(prev: pd.Series, curr: pd.Series) -> bool:
     )
 
 
-def is_bullish_harami(prev: pd.Series, curr: pd.Series) -> bool:
+def is_bullish_harami(prev, curr) -> bool:
     """
     Bullish Harami — small green inside large red
     Signal: CALL
@@ -248,7 +248,7 @@ def is_bullish_harami(prev: pd.Series, curr: pd.Series) -> bool:
     )
 
 
-def is_bearish_harami(prev: pd.Series, curr: pd.Series) -> bool:
+def is_bearish_harami(prev, curr) -> bool:
     """
     Bearish Harami — small red inside large green
     Signal: PUT
@@ -261,7 +261,7 @@ def is_bearish_harami(prev: pd.Series, curr: pd.Series) -> bool:
     )
 
 
-def is_inside_bar(prev: pd.Series, curr: pd.Series) -> bool:
+def is_inside_bar(prev, curr) -> bool:
     """
     Inside Bar — current within previous range
     Signal: Breakout pending → wait
@@ -272,7 +272,7 @@ def is_inside_bar(prev: pd.Series, curr: pd.Series) -> bool:
     )
 
 
-def is_tweezer_bottom(prev: pd.Series, curr: pd.Series) -> bool:
+def is_tweezer_bottom(prev, curr) -> bool:
     """
     Tweezer Bottom — same lows (support)
     Signal: CALL
@@ -284,7 +284,7 @@ def is_tweezer_bottom(prev: pd.Series, curr: pd.Series) -> bool:
     )
 
 
-def is_tweezer_top(prev: pd.Series, curr: pd.Series) -> bool:
+def is_tweezer_top(prev, curr) -> bool:
     """
     Tweezer Top — same highs (resistance)
     Signal: PUT
@@ -300,7 +300,7 @@ def is_tweezer_top(prev: pd.Series, curr: pd.Series) -> bool:
 # THREE CANDLE PATTERNS
 # ─────────────────────────────────────────────────
 
-def is_morning_star(c1: pd.Series, c2: pd.Series, c3: pd.Series) -> bool:
+def is_morning_star(c1, c2, c3) -> bool:
     """
     Morning Star — bearish, doji/small, bullish
     Signal: Strong CALL reversal
@@ -313,7 +313,7 @@ def is_morning_star(c1: pd.Series, c2: pd.Series, c3: pd.Series) -> bool:
     )
 
 
-def is_evening_star(c1: pd.Series, c2: pd.Series, c3: pd.Series) -> bool:
+def is_evening_star(c1, c2, c3) -> bool:
     """
     Evening Star — bullish, doji/small, bearish
     Signal: Strong PUT reversal
@@ -327,7 +327,7 @@ def is_evening_star(c1: pd.Series, c2: pd.Series, c3: pd.Series) -> bool:
 
 
 def is_three_white_soldiers(
-    c1: pd.Series, c2: pd.Series, c3: pd.Series
+    c1, c2, c3
 ) -> bool:
     """
     Three White Soldiers — 3 consecutive bullish
@@ -345,7 +345,7 @@ def is_three_white_soldiers(
 
 
 def is_three_black_crows(
-    c1: pd.Series, c2: pd.Series, c3: pd.Series
+    c1, c2, c3
 ) -> bool:
     """
     Three Black Crows — 3 consecutive bearish
@@ -363,7 +363,7 @@ def is_three_black_crows(
 
 
 def is_three_inside_up(
-    c1: pd.Series, c2: pd.Series, c3: pd.Series
+    c1, c2, c3
 ) -> bool:
     """
     Three Inside Up — bullish reversal confirmation
@@ -378,7 +378,7 @@ def is_three_inside_up(
 
 
 def is_three_inside_down(
-    c1: pd.Series, c2: pd.Series, c3: pd.Series
+    c1, c2, c3
 ) -> bool:
     """
     Three Inside Down — bearish reversal confirmation
@@ -518,6 +518,7 @@ if __name__ == "__main__":
     print("─" * 45)
 
     # Test bullish engulfing
+    import pandas as pd
     test_data = pd.DataFrame([
         {"open": 1.1010, "high": 1.1020,
          "low": 1.0990, "close": 1.0995, "volume": 500},
