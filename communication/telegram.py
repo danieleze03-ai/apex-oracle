@@ -253,7 +253,8 @@ async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Handle /balance command"""
     try:
-        from broker.deriv import get_balance
+        from broker.deriv import get_balance, ensure_connected
+        ensure_connected()
         balance = get_balance()
         mode    = os.getenv("TRADING_MODE", "PRACTICE")
         await update.message.reply_text(
