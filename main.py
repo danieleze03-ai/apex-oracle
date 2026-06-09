@@ -101,24 +101,18 @@ from server.keep_alive import (
 
 
 # ─────────────────────────────────────────────────
-# PAIR CONFIG
+# PAIR CONFIG — SYNTHETIC ONLY
 # ─────────────────────────────────────────────────
 
-FOREX_PAIRS     = ["EURUSD", "GBPUSD", "GBPJPY", "EURGBP", "USDJPY"]
-SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10"]
-
+SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10", "V100", "V60", "V90"]
 
 def get_active_pair_list() -> list:
     """
-    Return correct pair list based on day/time.
-    Weekends → Synthetic (Volatility Indices)
-    Weekdays → Forex pairs
+    Return Synthetic pairs for 24/7 testing.
+    Forex pairs removed completely.
     """
-    day = datetime.now().weekday()  # 0=Monday, 6=Sunday
-    if day >= 5:
-        logger.info("📅 Weekend detected — switching to Synthetic pairs")
-        return SYNTHETIC_PAIRS
-    return FOREX_PAIRS
+    logger.info("📈 Synthetic-only mode — all pairs active 24/7")
+    return SYNTHETIC_PAIRS
 
 
 # ─────────────────────────────────────────────────
@@ -482,7 +476,7 @@ def trading_loop():
 
     Every 30 seconds:
     1. Check if trading is allowed
-    2. Auto-select pairs (forex or synthetic)
+    2. Auto-select pairs (synthetic only)
     3. Process signal
     4. Execute trade if approved
     5. Run daily tasks
@@ -494,9 +488,6 @@ def trading_loop():
     while True:
         try:
             # ── Update balance ────────────────────
-            # get_balance() calls ensure_connected()
-            # internally — it will auto-reconnect if
-            # truly disconnected. No manual ping needed.
             balance = get_balance()
 
             if balance == 0.0:
@@ -547,7 +538,7 @@ def trading_loop():
                 f"🔍 Analyzing {pair} | "
                 f"Session: {session['session']} | "
                 f"Balance: ${balance:.2f} | "
-                f"Mode: {'WEEKEND-SYNTHETIC' if pair in ['V75','V50','V25','V10'] else 'FOREX'}"
+                f"Mode: SYNTHETIC-ONLY"
             )
 
             # ── Process signal ────────────────────
@@ -637,20 +628,17 @@ def startup():
         try:
             await update.message.reply_text("🔄 Starting test trade...")
 
-            # Run blocking get_balance in executor to not block the bot
             loop = asyncio.get_running_loop()
             balance = await loop.run_in_executor(None, get_balance)
             if balance < 5.0:
                 await update.message.reply_text(f"⚠️ Balance too low: ${balance:.2f}")
                 return
 
-            # ✅ FIXED: Use EURUSD (Deriv Forex pair) instead of EURUSD-OTC
             pair = "V75"
             direction = "CALL" if random.randint(0, 1) == 0 else "PUT"
             stake = 1.00
             expiry = 1
 
-            # Run blocking place_trade in executor
             trade_result = await loop.run_in_executor(None, place_trade, pair, direction, stake, expiry)
 
             if not trade_result.get("success"):
@@ -665,16 +653,13 @@ def startup():
                 f"⏳ Waiting {expiry} minutes..."
             )
 
-            # 🚀 DO NOT USE time.sleep() — use await asyncio.sleep()
             await asyncio.sleep((expiry * 60) + 5)
 
-            # Run blocking check_trade_result in executor
             result = await loop.run_in_executor(None, check_trade_result, trade_id)
             outcome = result.get("result", "UNKNOWN")
             profit = result.get("profit", 0.0)
             new_balance = await loop.run_in_executor(None, get_balance)
 
-            # Run blocking log_trade in executor
             await loop.run_in_executor(None, log_trade, {
                 "pair": pair,
                 "direction": direction,
@@ -711,8 +696,8 @@ def startup():
 
     # ── Detect weekend mode ───────────────────────
     active_pairs = get_active_pair_list()
-    is_weekend   = active_pairs[0] in SYNTHETIC_PAIRS
-    pair_display = "V75, V50, V25 (Synthetic)" if is_weekend else "EURUSD, GBPUSD (Forex)"
+    is_weekend   = False  # Always False — synthetic-only
+    pair_display = "V75, V50, V25, V10, V100, V60, V90"
 
     logger.success("=" * 50)
     logger.success(f"✅ APEX ORACLE IS ONLINE!")
@@ -720,7 +705,7 @@ def startup():
     logger.success(f"📊 Mode:            {mode}")
     logger.success(f"🎯 Min Confidence:  75%")
     logger.success(f"💱 Active Pairs:    {pair_display}")
-    logger.success(f"📅 Weekend Backup:  V75, V50, V25")
+    logger.success(f"📅 Trading:         SYNTHETIC-ONLY 24/7")
     logger.success(f"🔌 Broker:          Deriv.com")
     logger.success("=" * 50)
 

@@ -26,20 +26,17 @@ account_balance  = 0.0
 trading_mode     = "demo"
 open_trades      = {}
 _last_ping_time  = 0
-_shared_loop     = None      # ← Shared event loop
+_shared_loop     = None
 
 # Pair mapping: our pairs → Deriv symbols
 PAIR_MAP = {
-    "EURUSD": "frxEURUSD",
-    "GBPUSD": "frxGBPUSD",
-    "GBPJPY": "frxGBPJPY",
-    "EURGBP": "frxEURGBP",
-    "USDJPY": "frxUSDJPY",
     "V75":    "R_75",
     "V50":    "R_50",
     "V25":    "R_25",
     "V10":    "R_10",
     "V100":   "R_100",
+    "V60":    "R_60",
+    "V90":    "R_90",
 }
 
 
@@ -48,38 +45,27 @@ PAIR_MAP = {
 # ─────────────────────────────────────────────────
 
 def _run(coro):
-    """
-    Run an async coroutine from a sync context.
-    ALWAYS uses the shared event loop. Never creates a new one.
-    """
     global _shared_loop
     try:
-        # Try to get the currently running loop
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        # No loop is running yet. Create and set our shared loop.
         if _shared_loop is None or _shared_loop.is_closed():
             _shared_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(_shared_loop)
         loop = _shared_loop
     
-    # If the loop is already running (like in main trading loop),
-    # schedule the coroutine safely.
     if loop.is_running():
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result()
     else:
-        # If loop is not running (e.g. first startup), run it.
         return loop.run_until_complete(coro)
 
 
 def _to_deriv_symbol(pair: str) -> str:
-    """Convert our pair name to Deriv symbol"""
     return PAIR_MAP.get(pair.upper(), pair)
 
 
 async def _send_receive(payload: dict, timeout: int = 10) -> dict:
-    """Send a request to Deriv and return the response"""
     global ws_connection
     try:
         await ws_connection.send(json.dumps(payload))
@@ -167,12 +153,10 @@ async def _connect_async() -> bool:
 
 
 def connect() -> bool:
-    """Connect to Deriv.com"""
     return _run(_connect_async())
 
 
 def disconnect():
-    """Disconnect from Deriv.com"""
     global ws_connection
     try:
         if ws_connection:
@@ -184,7 +168,6 @@ def disconnect():
 
 
 def reconnect(max_attempts: int = 5) -> bool:
-    """Auto reconnect if connection drops"""
     global ws_connection
     ws_connection = None
     for attempt in range(1, max_attempts + 1):
@@ -198,7 +181,6 @@ def reconnect(max_attempts: int = 5) -> bool:
 
 
 def is_connected() -> bool:
-    """Check if WebSocket is still alive"""
     global ws_connection
     try:
         if ws_connection is None:
@@ -211,7 +193,6 @@ def is_connected() -> bool:
 
 
 def ensure_connected() -> bool:
-    """Make sure we are connected before any operation"""
     if not is_connected():
         logger.warning("⚠️ Connection lost! Attempting reconnect...")
         return reconnect()
@@ -234,7 +215,6 @@ async def _get_balance_async() -> float:
 
 
 def get_balance() -> float:
-    """Get current account balance"""
     try:
         if ensure_connected():
             return _run(_get_balance_async())
@@ -245,12 +225,10 @@ def get_balance() -> float:
 
 
 def get_mode() -> str:
-    """Get current trading mode"""
     return os.getenv("TRADING_MODE", "PRACTICE")
 
 
 def switch_mode(mode: str) -> bool:
-    """Switch between PRACTICE and REAL"""
     try:
         if mode not in ["PRACTICE", "REAL"]:
             logger.error("❌ Mode must be PRACTICE or REAL")
@@ -313,7 +291,6 @@ async def _get_candles_async(pair: str, timeframe: int, count: int) -> list:
 
 
 def get_candles(pair: str, timeframe: int, count: int = 100) -> list:
-    """Get historical candles for a pair"""
     try:
         if not ensure_connected():
             return []
@@ -324,7 +301,6 @@ def get_candles(pair: str, timeframe: int, count: int = 100) -> list:
 
 
 def get_current_price(pair: str) -> float:
-    """Get latest price for a pair"""
     try:
         candles = get_candles(pair, 1, 1)
         if candles:
@@ -355,7 +331,6 @@ async def _is_pair_open_async(pair: str) -> bool:
 
 
 def is_pair_open(pair: str) -> bool:
-    """Check if a pair is currently tradeable"""
     try:
         if not ensure_connected():
             return False
@@ -436,7 +411,6 @@ async def _place_trade_async(
 def place_trade(
     pair: str, direction: str, stake: float, expiry: int = 5
 ) -> dict:
-    """Place a binary options trade on Deriv"""
     try:
         if not ensure_connected():
             return {"success": False, "error": "Not connected"}
@@ -496,7 +470,6 @@ async def _check_trade_result_async(trade_id: int) -> dict:
 
 
 def check_trade_result(trade_id: int) -> dict:
-    """Check if a trade won or lost"""
     try:
         if not ensure_connected():
             return {"result": "unknown", "profit": 0}
@@ -518,8 +491,8 @@ if __name__ == "__main__":
         print(f"\n✅ Connected to Deriv!")
         print(f"💰 Balance: ${get_balance():.2f}")
         print(f"📊 Mode: {get_mode()}")
-        print(f"\n🔍 Testing EURUSD candles...")
-        candles = get_candles("EURUSD", 5, 5)
+        print(f"\n🔍 Testing V75 candles...")
+        candles = get_candles("V75", 5, 5)
         if candles:
             print(f"✅ Got {len(candles)} candles!")
             print(f"   Latest close: {candles[-1]['close']}")
