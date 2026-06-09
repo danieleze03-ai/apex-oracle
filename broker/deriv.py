@@ -25,7 +25,8 @@ ws_connection    = None
 account_balance  = 0.0
 trading_mode     = "demo"
 open_trades      = {}
-_last_ping_time  = 0      # ← track last ping time
+_last_ping_time  = 0
+_event_loop      = None      # ← track last ping time
 
 # Pair mapping: our pairs → Deriv symbols
 PAIR_MAP = {
@@ -47,17 +48,17 @@ PAIR_MAP = {
 # ─────────────────────────────────────────────────
 
 def _get_loop():
-    """Get or create event loop"""
+    """Get or create event loop — reuse same loop always"""
+    global _event_loop
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop
+        if _event_loop is None or _event_loop.is_closed():
+            _event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_event_loop)
+        return _event_loop
     except:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop
+        _event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_event_loop)
+        return _event_loop
 
 
 def _run(coro):
