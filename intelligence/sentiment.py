@@ -10,7 +10,6 @@ import re
 import time
 import requests
 from datetime import datetime, timedelta
-from textblob import TextBlob
 from bs4 import BeautifulSoup
 from loguru import logger
 from dotenv import load_dotenv
@@ -49,10 +48,6 @@ HIGH_IMPACT_KEYWORDS = [
 # ─────────────────────────────────────────────────
 
 def scrape_forexfactory() -> list:
-    """
-    Scrape Forex Factory for upcoming news events
-    Returns list of news items
-    """
     try:
         headers = {
             "User-Agent": (
@@ -97,9 +92,6 @@ def scrape_forexfactory() -> list:
 
 
 def scrape_investing_news() -> list:
-    """
-    Scrape Investing.com for forex headlines
-    """
     try:
         headers = {
             "User-Agent": (
@@ -134,10 +126,6 @@ def scrape_investing_news() -> list:
 
 
 def get_fallback_headlines() -> list:
-    """
-    Fallback headlines when scraping fails
-    Returns neutral headlines
-    """
     return [
         {"title": "Forex markets trading in normal ranges", "source": "Fallback"},
         {"title": "EUR/USD holds steady amid mixed signals", "source": "Fallback"},
@@ -155,11 +143,12 @@ def analyze_headline(headline: str) -> float:
     Returns score: -1.0 (bearish) to +1.0 (bullish)
     """
     try:
-        # TextBlob analysis
+        # ── LAZY IMPORT — only loads textblob when this function is called ──
+        from textblob import TextBlob
+
         blob  = TextBlob(headline)
         score = blob.sentiment.polarity
 
-        # Boost with forex-specific keywords
         headline_lower = headline.lower()
 
         bullish_count = sum(
@@ -171,7 +160,6 @@ def analyze_headline(headline: str) -> float:
             if word in headline_lower
         )
 
-        # Adjust score with keyword counts
         keyword_score = (bullish_count - bearish_count) * 0.1
         final_score   = max(-1.0, min(1.0, score + keyword_score))
 
@@ -183,10 +171,6 @@ def analyze_headline(headline: str) -> float:
 
 
 def check_high_impact_news(headlines: list) -> dict:
-    """
-    Check if any high impact news is present
-    Returns whether trading should be blocked
-    """
     try:
         found_events = []
         for item in headlines:
@@ -225,7 +209,6 @@ def check_high_impact_news(headlines: list) -> dict:
 # MASTER SENTIMENT ANALYZER
 # ─────────────────────────────────────────────────
 
-# Cache to avoid scraping every signal
 _sentiment_cache = {
     "score":      0.0,
     "bias":       "NEUTRAL",
@@ -237,22 +220,8 @@ CACHE_MINUTES = 5
 
 
 def get_market_sentiment() -> dict:
-    """
-    Get current market sentiment score
-
-    Returns:
-    {
-        "score":     65.0,        (-100 bearish to +100 bullish)
-        "bias":      "BULLISH",   BULLISH / BEARISH / NEUTRAL
-        "blocked":   False,       True if high impact news
-        "block_reason": "",
-        "headlines": [...],
-        "cached":    False,
-    }
-    """
     global _sentiment_cache
 
-    # ── Check cache ───────────────────────────────
     if _sentiment_cache["timestamp"]:
         age = (datetime.now() - _sentiment_cache["timestamp"]).seconds / 60
         if age < CACHE_MINUTES:
@@ -262,7 +231,6 @@ def get_market_sentiment() -> dict:
             return cached
 
     try:
-        # ── Scrape news ───────────────────────────
         logger.info("📰 Fetching market sentiment...")
         headlines = []
         headlines += scrape_forexfactory()
@@ -271,24 +239,16 @@ def get_market_sentiment() -> dict:
         if not headlines:
             headlines = get_fallback_headlines()
 
-        # ── Check high impact news ────────────────
         impact_check = check_high_impact_news(headlines)
 
-        # ── Analyze sentiment ─────────────────────
         scores = []
         for item in headlines[:20]:
             score = analyze_headline(item["title"])
             scores.append(score)
 
-        if not scores:
-            avg_score = 0.0
-        else:
-            avg_score = sum(scores) / len(scores)
-
-        # Convert to -100 to +100 scale
+        avg_score       = sum(scores) / len(scores) if scores else 0.0
         sentiment_score = round(avg_score * 100, 1)
 
-        # ── Determine bias ────────────────────────
         if sentiment_score > 20:
             bias = "BULLISH"
         elif sentiment_score < -20:
@@ -296,7 +256,6 @@ def get_market_sentiment() -> dict:
         else:
             bias = "NEUTRAL"
 
-        # ── Build result ──────────────────────────
         result = {
             "score":        sentiment_score,
             "bias":         bias,
@@ -308,7 +267,6 @@ def get_market_sentiment() -> dict:
             "timestamp":    datetime.now().isoformat(),
         }
 
-        # ── Update cache ──────────────────────────
         _sentiment_cache = result.copy()
         _sentiment_cache["timestamp"] = datetime.now()
 
@@ -338,22 +296,16 @@ def sentiment_favors_direction(
     sentiment: dict,
     direction: str
 ) -> bool:
-    """
-    Check if sentiment supports our trade direction
-    Used as an extra filter before trading
-    """
     bias = sentiment.get("bias", "NEUTRAL")
 
     if bias == "NEUTRAL":
-        return True   # Neutral doesn't block anything
-
+        return True
     if direction == "CALL" and bias == "BULLISH":
-        return True   # Sentiment agrees with CALL
-
+        return True
     if direction == "PUT" and bias == "BEARISH":
-        return True   # Sentiment agrees with PUT
+        return True
 
-    return False      # Sentiment disagrees
+    return False
 
 
 # ─────────────────────────────────────────────────

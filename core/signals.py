@@ -5,8 +5,6 @@
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
 
-import numpy as np
-import pandas as pd
 from loguru import logger
 
 
@@ -14,9 +12,10 @@ from loguru import logger
 # DATA PREPARATION
 # ─────────────────────────────────────────────────
 
-def prepare_dataframe(candles: list) -> pd.DataFrame:
+def prepare_dataframe(candles: list):
     """Convert raw candle list to DataFrame"""
     try:
+        import pandas as pd  # ← LAZY
         df = pd.DataFrame(candles)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
         df = df.sort_values("timestamp").reset_index(drop=True)
@@ -25,6 +24,7 @@ def prepare_dataframe(candles: list) -> pd.DataFrame:
         return df
     except Exception as e:
         logger.error(f"❌ Failed to prepare dataframe: {e}")
+        import pandas as pd
         return pd.DataFrame()
 
 
@@ -32,7 +32,7 @@ def prepare_dataframe(candles: list) -> pd.DataFrame:
 # RSI — Relative Strength Index
 # ─────────────────────────────────────────────────
 
-def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
+def calculate_rsi(df, period: int = 14):
     """
     Calculate RSI
     < 30 = Oversold  → CALL signal
@@ -40,6 +40,7 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
     45-55 = Neutral  → SKIP
     """
     try:
+        import pandas as pd  # ← LAZY
         delta    = df["close"].diff()
         gain     = delta.where(delta > 0, 0.0)
         loss     = -delta.where(delta < 0, 0.0)
@@ -50,6 +51,7 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
         return rsi
     except Exception as e:
         logger.error(f"❌ RSI calculation error: {e}")
+        import pandas as pd
         return pd.Series()
 
 
@@ -69,12 +71,7 @@ def get_rsi_signal(rsi_value: float) -> str:
 # MACD — Moving Average Convergence Divergence
 # ─────────────────────────────────────────────────
 
-def calculate_macd(
-    df:     pd.DataFrame,
-    fast:   int = 12,
-    slow:   int = 26,
-    signal: int = 9,
-) -> dict:
+def calculate_macd(df, fast: int = 12, slow: int = 26, signal: int = 9) -> dict:
     """
     Calculate MACD
     MACD crosses above signal → CALL
@@ -128,11 +125,7 @@ def get_macd_signal(macd_data: dict) -> str:
 # BOLLINGER BANDS
 # ─────────────────────────────────────────────────
 
-def calculate_bollinger_bands(
-    df:     pd.DataFrame,
-    period: int   = 20,
-    std:    float = 2.0,
-) -> dict:
+def calculate_bollinger_bands(df, period: int = 20, std: float = 2.0) -> dict:
     """
     Calculate Bollinger Bands
     Price touches lower band → CALL
@@ -156,7 +149,7 @@ def calculate_bollinger_bands(
         return {}
 
 
-def get_bb_signal(bb_data: dict, df: pd.DataFrame) -> str:
+def get_bb_signal(bb_data: dict, df) -> str:
     """Get trading signal from Bollinger Bands"""
     try:
         close = df["close"].iloc[-1]
@@ -166,7 +159,6 @@ def get_bb_signal(bb_data: dict, df: pd.DataFrame) -> str:
 
         if width < 0.5:
             return "SQUEEZE"
-
         if close <= lower:
             return "CALL"
         elif close >= upper:
@@ -182,11 +174,7 @@ def get_bb_signal(bb_data: dict, df: pd.DataFrame) -> str:
 # EMA CROSS — Exponential Moving Average
 # ─────────────────────────────────────────────────
 
-def calculate_ema(
-    df:   pd.DataFrame,
-    fast: int = 9,
-    slow: int = 21,
-) -> dict:
+def calculate_ema(df, fast: int = 9, slow: int = 21) -> dict:
     """
     Calculate EMA Cross
     Fast EMA crosses above slow → CALL
@@ -225,25 +213,22 @@ def get_ema_signal(ema_data: dict) -> str:
 
 
 # ─────────────────────────────────────────────────
-# STOCHASTIC RSI — Replaces Volume
-# Works 100% on price — no volume needed
+# STOCHASTIC RSI
 # ─────────────────────────────────────────────────
 
 def calculate_stoch_rsi(
-    df:        pd.DataFrame,
-    rsi_period: int = 14,
+    df,
+    rsi_period:   int = 14,
     stoch_period: int = 14,
-    smooth_k:  int = 3,
-    smooth_d:  int = 3,
+    smooth_k:     int = 3,
+    smooth_d:     int = 3,
 ) -> dict:
     """
     Calculate Stochastic RSI
-    Catches reversals RSI misses
     %K < 20 = Oversold  → CALL
     %K > 80 = Overbought → PUT
     """
     try:
-        # First calculate RSI
         delta    = df["close"].diff()
         gain     = delta.where(delta > 0, 0.0)
         loss     = -delta.where(delta < 0, 0.0)
@@ -252,7 +237,6 @@ def calculate_stoch_rsi(
         rs       = avg_gain / avg_loss
         rsi      = 100 - (100 / (1 + rs))
 
-        # Then apply Stochastic to RSI values
         rsi_min  = rsi.rolling(window=stoch_period).min()
         rsi_max  = rsi.rolling(window=stoch_period).max()
         stoch    = (rsi - rsi_min) / (rsi_max - rsi_min) * 100
@@ -267,28 +251,18 @@ def calculate_stoch_rsi(
 
 
 def get_stoch_rsi_signal(stoch_data: dict) -> str:
-    """
-    Get trading signal from Stochastic RSI
-    < 20 oversold  → CALL
-    > 80 overbought → PUT
-    Crossover adds confirmation
-    """
     try:
         k_curr = stoch_data["k"].iloc[-1]
         k_prev = stoch_data["k"].iloc[-2]
         d_curr = stoch_data["d"].iloc[-1]
         d_prev = stoch_data["d"].iloc[-2]
 
-        # Oversold zone with bullish crossover
         if k_curr < 20 and k_prev < d_prev and k_curr > d_curr:
             return "CALL"
-        # Overbought zone with bearish crossover
         elif k_curr > 80 and k_prev > d_prev and k_curr < d_curr:
             return "PUT"
-        # Just oversold (no crossover yet)
         elif k_curr < 20:
             return "CALL"
-        # Just overbought (no crossover yet)
         elif k_curr > 80:
             return "PUT"
         else:
@@ -299,12 +273,13 @@ def get_stoch_rsi_signal(stoch_data: dict) -> str:
 
 
 # ─────────────────────────────────────────────────
-# ATR — Average True Range (Volatility)
+# ATR — Average True Range
 # ─────────────────────────────────────────────────
 
-def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+def calculate_atr(df, period: int = 14):
     """Calculate ATR for volatility measurement"""
     try:
+        import pandas as pd  # ← LAZY
         high       = df["high"]
         low        = df["low"]
         close      = df["close"]
@@ -320,6 +295,7 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
         return atr
     except Exception as e:
         logger.error(f"❌ ATR calculation error: {e}")
+        import pandas as pd
         return pd.Series()
 
 
@@ -330,24 +306,7 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
 def generate_signal(candles: list, pair: str = "") -> dict:
     """
     Generate complete trading signal from candle data
-
-    5 Indicators:
-    1. RSI
-    2. MACD
-    3. Bollinger Bands
-    4. EMA Cross
-    5. Stochastic RSI  ← replaces Volume
-
-    Minimum 4/5 must agree to trade.
-
-    Returns:
-    {
-        "direction":  "CALL" / "PUT" / "SKIP",
-        "confidence": 85.0,
-        "indicators": {...},
-        "agreement":  4,
-        "reason":     "4/5 indicators agree CALL"
-    }
+    5 Indicators — minimum 4/5 must agree to trade.
     """
     try:
         if len(candles) < 50:
@@ -365,7 +324,6 @@ def generate_signal(candles: list, pair: str = "") -> dict:
                 "reason":     "Empty dataframe",
             }
 
-        # ── Calculate all indicators ──────────────
         rsi       = calculate_rsi(df)
         macd      = calculate_macd(df)
         bb        = calculate_bollinger_bands(df)
@@ -374,7 +332,6 @@ def generate_signal(candles: list, pair: str = "") -> dict:
 
         rsi_val   = rsi.iloc[-1] if not rsi.empty else 50
 
-        # ── Get signals ───────────────────────────
         rsi_sig   = get_rsi_signal(rsi_val)
         macd_sig  = get_macd_signal(macd)
         bb_sig    = get_bb_signal(bb, df)
@@ -389,11 +346,9 @@ def generate_signal(candles: list, pair: str = "") -> dict:
             f"BB={bb_sig} EMA={ema_sig} STOCHRSI={stoch_sig}"
         )
 
-        # ── Count agreements ──────────────────────
         calls = signals.count("CALL")
         puts  = signals.count("PUT")
 
-        # ── Determine direction ───────────────────
         if calls >= 4:
             direction  = "CALL"
             agreement  = calls
@@ -415,7 +370,6 @@ def generate_signal(candles: list, pair: str = "") -> dict:
             agreement  = 0
             confidence = 0
 
-        # Skip BB squeeze — no volatility
         if bb_sig == "SQUEEZE":
             direction  = "SKIP"
             confidence = 0
