@@ -476,8 +476,8 @@ def trading_loop():
 
     Every 30 seconds:
     1. Check if trading is allowed
-    2. Auto-select pairs (synthetic only)
-    3. Process signal
+    2. Scan ALL synthetic pairs in order
+    3. Process signal for each pair until one is found
     4. Execute trade if approved
     5. Run daily tasks
     """
@@ -513,15 +513,9 @@ def trading_loop():
                 run_daily_tasks()
                 continue
 
-            # ── Check session ─────────────────────
-            session = is_trading_time()
-            if not session["allowed"]:
-                logger.debug(
-                    f"🕐 Outside session: {session['reason']}"
-                )
-                time.sleep(LOOP_INTERVAL)
-                run_daily_tasks()
-                continue
+            # ── Check session (REMOVED) ────────────
+            # 🔧 Synthetic-only 24/7 — no session limitations
+            session = {"allowed": True, "session": "SYNTHETIC-24/7"}
 
             # ── Check news block ──────────────────
             news = is_news_blocked()
@@ -530,31 +524,38 @@ def trading_loop():
                 time.sleep(LOOP_INTERVAL)
                 continue
 
-            # ── Auto-select pairs ─────────────────
+            # ── Scan ALL synthetic pairs ───────────
             active_pairs = get_active_pair_list()
-            pair         = active_pairs[0]
+            trade_found = False
 
-            logger.info(
-                f"🔍 Analyzing {pair} | "
-                f"Session: {session['session']} | "
-                f"Balance: ${balance:.2f} | "
-                f"Mode: SYNTHETIC-ONLY"
-            )
-
-            # ── Process signal ────────────────────
-            signal = process_signal(pair)
-
-            if signal["action"] == "TRADE":
+            for pair in active_pairs:
                 logger.info(
-                    f"🚀 SIGNAL APPROVED: "
-                    f"{signal['direction']} {pair} | "
-                    f"Confidence: {signal['confidence']}%"
+                    f"🔍 Analyzing {pair} | "
+                    f"Session: {session['session']} | "
+                    f"Balance: ${balance:.2f} | "
+                    f"Mode: SYNTHETIC-ONLY"
                 )
-                execute_trade(signal)
-            else:
-                logger.debug(
-                    f"⏭️ Signal skipped: {signal['reason']}"
-                )
+
+                # ── Process signal ──────────────────
+                signal = process_signal(pair)
+
+                if signal["action"] == "TRADE":
+                    logger.info(
+                        f"🚀 SIGNAL APPROVED: "
+                        f"{signal['direction']} {pair} | "
+                        f"Confidence: {signal['confidence']}%"
+                    )
+                    execute_trade(signal)
+                    trade_found = True
+                    break  # Exit loop after one trade
+                else:
+                    logger.debug(
+                        f"⏭️ {pair} skipped: {signal['reason']}"
+                    )
+
+            # ── If no trade found, move on ─────────
+            if not trade_found:
+                logger.debug("No tradeable signal found in this cycle.")
 
             # ── Run daily tasks ───────────────────
             run_daily_tasks()
