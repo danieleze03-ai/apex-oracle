@@ -36,7 +36,7 @@ from intelligence.evolution  import (
 )
 
 # Broker
-from broker.iqoption import (
+from broker.deriv import (
     connect, disconnect, reconnect,
     get_balance, get_candles,
     get_current_price, switch_mode,
@@ -101,20 +101,40 @@ from server.keep_alive import (
 
 
 # ─────────────────────────────────────────────────
+# PAIR CONFIG
+# ─────────────────────────────────────────────────
+
+FOREX_PAIRS = ["EURUSD", "GBPUSD", "GBPJPY", "EURGBP", "USDJPY"]
+SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10"]  # 24/7 including weekends
+
+
+def get_active_pair_list() -> list:
+    """
+    Return correct pair list based on day/time.
+    Weekends → Synthetic (Volatility Indices)
+    Weekdays → Forex pairs
+    """
+    day = datetime.now().weekday()  # 0=Monday, 6=Sunday
+    if day >= 5:  # Saturday or Sunday
+        logger.info("📅 Weekend detected — switching to Synthetic pairs")
+        return SYNTHETIC_PAIRS
+    return FOREX_PAIRS
+
+
+# ─────────────────────────────────────────────────
 # BOT STATE
 # ─────────────────────────────────────────────────
 
 bot_state = {
-    "running":        False,
-    "mode":           os.getenv("TRADING_MODE", "PRACTICE"),
-    "balance":        0.0,
-    "trades_today":   0,
-    "wins_today":     0,
-    "losses_today":   0,
-    "last_signal":    None,
-    "last_trade":     None,
-    "start_time":     datetime.now(),
-    "iq":             None,
+    "running":      False,
+    "mode":         os.getenv("TRADING_MODE", "PRACTICE"),
+    "balance":      0.0,
+    "trades_today": 0,
+    "wins_today":   0,
+    "losses_today": 0,
+    "last_signal":  None,
+    "last_trade":   None,
+    "start_time":   datetime.now(),
 }
 
 # Timeframes to analyze (minutes)
@@ -159,7 +179,7 @@ def process_signal(pair: str) -> dict:
         if len(primary) < 50:
             return {
                 "action": "SKIP",
-                "reason": "Not enough candle data"
+                "reason": "Not enough candle data",
             }
 
         # ── Calculate confluence ──────────────────
@@ -172,18 +192,18 @@ def process_signal(pair: str) -> dict:
 
         # Log signal
         log_signal({
-            "pair":       pair,
-            "direction":  direction,
-            "confidence": confidence,
-            "action":     confluence["action"],
+            "pair":        pair,
+            "direction":   direction,
+            "confidence":  confidence,
+            "action":      confluence["action"],
             "skip_reason": confluence.get("reason", ""),
         })
 
         bot_state["last_signal"] = {
-            "pair":      pair,
-            "direction": direction,
+            "pair":       pair,
+            "direction":  direction,
             "confidence": confidence,
-            "time":      datetime.now().isoformat(),
+            "time":       datetime.now().isoformat(),
         }
         update_status("last_signal", bot_state["last_signal"])
 
@@ -206,15 +226,15 @@ def process_signal(pair: str) -> dict:
             }
 
         # ── Get price for manipulation check ─────
-        iq_price = get_current_price(pair)
-        guard    = compare_prices(pair, iq_price)
+        deriv_price = get_current_price(pair)
+        guard       = compare_prices(pair, deriv_price)
 
         if not guard["safe"]:
             asyncio.run(send_manipulation_alert({
-                "pair":        pair,
-                "iq_price":    guard["iq_price"],
-                "yahoo_price": guard["yahoo_price"],
-                "difference":  guard["difference"],
+                "pair":         pair,
+                "deriv_price":  guard["deriv_price"],
+                "yahoo_price":  guard["yahoo_price"],
+                "difference":   guard["difference"],
             }))
             return {
                 "action": "SKIP",
@@ -227,49 +247,49 @@ def process_signal(pair: str) -> dict:
         ind_data   = indicators.get("details", {})
 
         trade_data = {
-            "pair":                pair,
-            "timeframe":           "5min",
-            "expiry":              "5 minutes",
-            "rsi_value":           ind_data.get(
+            "pair":                 pair,
+            "timeframe":            "5min",
+            "expiry":               "5 minutes",
+            "rsi_value":            ind_data.get(
                 "rsi", {}
             ).get("value", 50),
-            "rsi_signal":          ind_data.get(
+            "rsi_signal":           ind_data.get(
                 "rsi", {}
             ).get("signal", "N/A"),
-            "macd_signal":         ind_data.get(
+            "macd_signal":          ind_data.get(
                 "macd", {}
             ).get("signal", "N/A"),
-            "bb_signal":           ind_data.get(
+            "bb_signal":            ind_data.get(
                 "bb", {}
             ).get("signal", "N/A"),
-            "ema_signal":          ind_data.get(
+            "ema_signal":           ind_data.get(
                 "ema", {}
             ).get("signal", "N/A"),
-            "volume_signal":       ind_data.get(
-                "volume", {}
+            "stochrsi_signal":      ind_data.get(
+                "stochrsi", {}
             ).get("signal", "N/A"),
-            "indicators_agree":    breakdown.get(
+            "indicators_agree":     breakdown.get(
                 "indicators", {}
             ).get("agreements", 0),
-            "pattern":             confluence.get("pattern", "None"),
-            "pattern_direction":   direction,
-            "pattern_strength":    breakdown.get(
+            "pattern":              confluence.get("pattern", "None"),
+            "pattern_direction":    direction,
+            "pattern_strength":     breakdown.get(
                 "pattern", {}
             ).get("strength", 0),
-            "volatility_level":    breakdown.get(
+            "volatility_level":     breakdown.get(
                 "volatility", {}
             ).get("level", "MEDIUM"),
             "volatility_tradeable": True,
-            "sentiment_score":     sentiment["score"],
-            "sentiment_bias":      sentiment["bias"],
-            "news_blocked":        sentiment["blocked"],
-            "tf_agreements":       breakdown.get(
+            "sentiment_score":      sentiment["score"],
+            "sentiment_bias":       sentiment["bias"],
+            "news_blocked":         sentiment["blocked"],
+            "tf_agreements":        breakdown.get(
                 "timeframes", {}
             ).get("agreements", 0),
-            "primary_direction":   direction,
-            "confluence_score":    confidence,
-            "balance":             bot_state["balance"],
-            "trades_today":        bot_state["trades_today"],
+            "primary_direction":    direction,
+            "confluence_score":     confidence,
+            "balance":              bot_state["balance"],
+            "trades_today":         bot_state["trades_today"],
         }
 
         ai_result = get_ai_decision(trade_data)
@@ -282,15 +302,15 @@ def process_signal(pair: str) -> dict:
 
         # ── All checks passed — TRADE! ────────────
         return {
-            "action":     "TRADE",
-            "direction":  direction,
-            "confidence": confidence,
-            "pair":       pair,
-            "stake_size": confluence["stake_size"],
-            "pattern":    confluence.get("pattern", "None"),
-            "sentiment":  sentiment["score"],
+            "action":       "TRADE",
+            "direction":    direction,
+            "confidence":   confidence,
+            "pair":         pair,
+            "stake_size":   confluence["stake_size"],
+            "pattern":      confluence.get("pattern", "None"),
+            "sentiment":    sentiment["score"],
             "ai_reasoning": ai_result["reasoning"],
-            "expiry":     get_optimal_expiry(),
+            "expiry":       get_optimal_expiry(),
         }
 
     except Exception as e:
@@ -308,11 +328,10 @@ def execute_trade(signal: dict) -> bool:
 
     1. Calculate stake
     2. Place live trade
-    3. Place shadow trade
-    4. Wait for result
-    5. Log everything
-    6. Update risk state
-    7. Send Telegram alerts
+    3. Wait for result
+    4. Log everything
+    5. Update risk state
+    6. Send Telegram alerts
     """
     try:
         pair      = signal["pair"]
@@ -321,9 +340,9 @@ def execute_trade(signal: dict) -> bool:
         balance   = get_balance()
 
         # ── Calculate stake ───────────────────────
-        strategy  = load_strategy()
-        win_rate  = 0.65
-        history   = strategy.get("performance_history", [])
+        strategy = load_strategy()
+        win_rate = 0.65
+        history  = strategy.get("performance_history", [])
         if history:
             last_wr  = history[-1].get("win_rate", 65)
             win_rate = last_wr / 100
@@ -379,13 +398,11 @@ def execute_trade(signal: dict) -> bool:
 
         # ── Wait for expiry ───────────────────────
         wait_seconds = (expiry * 60) + 5
-        logger.info(
-            f"⏳ Waiting {wait_seconds}s for result..."
-        )
+        logger.info(f"⏳ Waiting {wait_seconds}s for result...")
         time.sleep(wait_seconds)
 
         # ── Check result ──────────────────────────
-        result = check_trade_result(trade_id)
+        result  = check_trade_result(trade_id)
         outcome = result["result"]
         profit  = result["profit"]
 
@@ -400,39 +417,37 @@ def execute_trade(signal: dict) -> bool:
             update_status("wins_today", bot_state["wins_today"])
         else:
             bot_state["losses_today"] += 1
-            update_status(
-                "losses_today", bot_state["losses_today"]
-            )
+            update_status("losses_today", bot_state["losses_today"])
 
         bot_state["balance"] = new_balance
         update_status("balance", new_balance)
 
         # ── Log to database ───────────────────────
         log_trade({
-            "pair":           pair,
-            "direction":      direction,
-            "stake":          stake,
-            "expiry_seconds": expiry * 60,
-            "confidence":     signal["confidence"],
-            "result":         outcome,
-            "profit_loss":    profit,
-            "balance_after":  new_balance,
-            "pattern":        signal.get("pattern", "None"),
-            "sentiment_score":signal.get("sentiment", 0),
-            "groq_reasoning": signal.get("ai_reasoning", ""),
-            "mode":           bot_state["mode"],
+            "pair":            pair,
+            "direction":       direction,
+            "stake":           stake,
+            "expiry_seconds":  expiry * 60,
+            "confidence":      signal["confidence"],
+            "result":          outcome,
+            "profit_loss":     profit,
+            "balance_after":   new_balance,
+            "pattern":         signal.get("pattern", "None"),
+            "sentiment_score": signal.get("sentiment", 0),
+            "groq_reasoning":  signal.get("ai_reasoning", ""),
+            "mode":            bot_state["mode"],
         })
 
         # ── Send result alert ─────────────────────
         asyncio.run(send_trade_result({
-            "pair":        pair,
-            "direction":   direction,
-            "result":      outcome,
-            "profit_loss": profit,
+            "pair":          pair,
+            "direction":     direction,
+            "result":        outcome,
+            "profit_loss":   profit,
             "balance_after": new_balance,
         }))
 
-        # ── Shadow trade record ───────────────────
+        # ── Record live result for shadow ─────────
         record_live_result(trade_id, outcome, profit)
 
         logger.info(
@@ -494,7 +509,7 @@ def trading_loop():
 
     Every 30 seconds:
     1. Check if trading is allowed
-    2. Get best pair
+    2. Auto-select pairs (forex or synthetic)
     3. Process signal
     4. Execute trade if approved
     5. Run daily tasks
@@ -544,12 +559,16 @@ def trading_loop():
                 time.sleep(LOOP_INTERVAL)
                 continue
 
-            # ── Get best pair ─────────────────────
-            pair = get_best_pair()
+            # ── Auto-select pairs ─────────────────
+            # Weekends → Synthetic | Weekdays → Forex
+            active_pairs = get_active_pair_list()
+            pair         = active_pairs[0]  # session manager picks best
+
             logger.info(
                 f"🔍 Analyzing {pair} | "
                 f"Session: {session['session']} | "
-                f"Balance: ${balance:.2f}"
+                f"Balance: ${balance:.2f} | "
+                f"Mode: {'WEEKEND-SYNTHETIC' if pair in ['V75','V50','V25','V10'] else 'FOREX'}"
             )
 
             # ── Process signal ────────────────────
@@ -600,11 +619,11 @@ def startup():
     logger.info("🌐 Starting keep-alive server...")
     start_keep_alive()
 
-    # ── Connect to IQ Option ──────────────────────
-    logger.info("🔌 Connecting to IQ Option...")
+    # ── Connect to Deriv ──────────────────────────
+    logger.info("🔌 Connecting to Deriv.com...")
     if not connect():
-        logger.critical("❌ Cannot connect to IQ Option!")
-        logger.critical("Check IQ_OPTION_EMAIL and PASSWORD in .env")
+        logger.critical("❌ Cannot connect to Deriv.com!")
+        logger.critical("Check DERIV_API_TOKEN in .env")
         return False
 
     # ── Get balance ───────────────────────────────
@@ -621,17 +640,24 @@ def startup():
     # ── Start Telegram bot ────────────────────────
     logger.info("📱 Starting Telegram bot...")
     telegram_app = start_telegram_bot()
-    inject_dependencies(bot_state, bot_state["iq"])
+    inject_dependencies(bot_state)
 
     # ── Send startup report ───────────────────────
     asyncio.run(send_startup_report(balance, mode))
 
+    # ── Detect weekend mode ───────────────────────
+    active_pairs = get_active_pair_list()
+    is_weekend   = active_pairs[0] in SYNTHETIC_PAIRS
+    pair_display = "V75, V50, V25 (Synthetic)" if is_weekend else "EURUSD, GBPUSD (Forex)"
+
     logger.success("=" * 50)
     logger.success(f"✅ APEX ORACLE IS ONLINE!")
-    logger.success(f"💰 Balance: ${balance:.2f}")
-    logger.success(f"📊 Mode:    {mode}")
-    logger.success(f"🎯 Min Confidence: 75%")
-    logger.success(f"💱 Primary Pairs: EURUSD-OTC, GBPUSD-OTC")
+    logger.success(f"💰 Balance:         ${balance:.2f}")
+    logger.success(f"📊 Mode:            {mode}")
+    logger.success(f"🎯 Min Confidence:  75%")
+    logger.success(f"💱 Active Pairs:    {pair_display}")
+    logger.success(f"📅 Weekend Backup:  V75, V50, V25")
+    logger.success(f"🔌 Broker:          Deriv.com")
     logger.success("=" * 50)
 
     return True

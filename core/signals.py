@@ -1,13 +1,14 @@
 # ⚡ APEX ORACLE — AO-1.0
 # Signal Engine — Technical Indicators
-# RSI, MACD, Bollinger Bands, EMA, Volume
-# Built manually for Python 3.14 compatibility
+# RSI, MACD, Bollinger Bands, EMA, Stochastic RSI
+# Built manually for Python 3.11 compatibility
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
 
 import numpy as np
 import pandas as pd
 from loguru import logger
+
 
 # ─────────────────────────────────────────────────
 # DATA PREPARATION
@@ -19,8 +20,8 @@ def prepare_dataframe(candles: list) -> pd.DataFrame:
         df = pd.DataFrame(candles)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
         df = df.sort_values("timestamp").reset_index(drop=True)
-        df[["open","high","low","close","volume"]] = \
-            df[["open","high","low","close","volume"]].astype(float)
+        df[["open","high","low","close"]] = \
+            df[["open","high","low","close"]].astype(float)
         return df
     except Exception as e:
         logger.error(f"❌ Failed to prepare dataframe: {e}")
@@ -39,13 +40,13 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
     45-55 = Neutral  → SKIP
     """
     try:
-        delta  = df["close"].diff()
-        gain   = delta.where(delta > 0, 0.0)
-        loss   = -delta.where(delta < 0, 0.0)
+        delta    = df["close"].diff()
+        gain     = delta.where(delta > 0, 0.0)
+        loss     = -delta.where(delta < 0, 0.0)
         avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
         avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-        rs  = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
+        rs       = avg_gain / avg_loss
+        rsi      = 100 - (100 / (1 + rs))
         return rsi
     except Exception as e:
         logger.error(f"❌ RSI calculation error: {e}")
@@ -69,10 +70,10 @@ def get_rsi_signal(rsi_value: float) -> str:
 # ─────────────────────────────────────────────────
 
 def calculate_macd(
-    df: pd.DataFrame,
-    fast: int = 12,
-    slow: int = 26,
-    signal: int = 9
+    df:     pd.DataFrame,
+    fast:   int = 12,
+    slow:   int = 26,
+    signal: int = 9,
 ) -> dict:
     """
     Calculate MACD
@@ -80,11 +81,11 @@ def calculate_macd(
     MACD crosses below signal → PUT
     """
     try:
-        ema_fast   = df["close"].ewm(span=fast, adjust=False).mean()
-        ema_slow   = df["close"].ewm(span=slow, adjust=False).mean()
-        macd_line  = ema_fast - ema_slow
-        signal_line= macd_line.ewm(span=signal, adjust=False).mean()
-        histogram  = macd_line - signal_line
+        ema_fast    = df["close"].ewm(span=fast,   adjust=False).mean()
+        ema_slow    = df["close"].ewm(span=slow,   adjust=False).mean()
+        macd_line   = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        histogram   = macd_line - signal_line
         return {
             "macd":      macd_line,
             "signal":    signal_line,
@@ -102,22 +103,20 @@ def get_macd_signal(macd_data: dict) -> str:
         signal = macd_data["signal"]
         hist   = macd_data["histogram"]
 
-        # Current and previous values
         macd_curr = macd.iloc[-1]
         macd_prev = macd.iloc[-2]
         sig_curr  = signal.iloc[-1]
         sig_prev  = signal.iloc[-2]
         hist_curr = hist.iloc[-1]
 
-        # Crossover detection
         if macd_prev < sig_prev and macd_curr > sig_curr:
-            return "CALL"  # MACD crossed above signal
+            return "CALL"
         elif macd_prev > sig_prev and macd_curr < sig_curr:
-            return "PUT"   # MACD crossed below signal
+            return "PUT"
         elif macd_curr > sig_curr and hist_curr > 0:
-            return "CALL"  # MACD above signal (bullish)
+            return "CALL"
         elif macd_curr < sig_curr and hist_curr < 0:
-            return "PUT"   # MACD below signal (bearish)
+            return "PUT"
         else:
             return "NEUTRAL"
     except Exception as e:
@@ -130,9 +129,9 @@ def get_macd_signal(macd_data: dict) -> str:
 # ─────────────────────────────────────────────────
 
 def calculate_bollinger_bands(
-    df: pd.DataFrame,
-    period: int = 20,
-    std: float = 2.0
+    df:     pd.DataFrame,
+    period: int   = 20,
+    std:    float = 2.0,
 ) -> dict:
     """
     Calculate Bollinger Bands
@@ -165,15 +164,13 @@ def get_bb_signal(bb_data: dict, df: pd.DataFrame) -> str:
         lower = bb_data["lower"].iloc[-1]
         width = bb_data["width"].iloc[-1]
 
-        # Squeeze = skip (low volatility)
         if width < 0.5:
             return "SQUEEZE"
 
-        # Price at bands
         if close <= lower:
-            return "CALL"   # Oversold at lower band
+            return "CALL"
         elif close >= upper:
-            return "PUT"    # Overbought at upper band
+            return "PUT"
         else:
             return "NEUTRAL"
     except Exception as e:
@@ -185,7 +182,11 @@ def get_bb_signal(bb_data: dict, df: pd.DataFrame) -> str:
 # EMA CROSS — Exponential Moving Average
 # ─────────────────────────────────────────────────
 
-def calculate_ema(df: pd.DataFrame, fast: int = 9, slow: int = 21) -> dict:
+def calculate_ema(
+    df:   pd.DataFrame,
+    fast: int = 9,
+    slow: int = 21,
+) -> dict:
     """
     Calculate EMA Cross
     Fast EMA crosses above slow → CALL
@@ -194,10 +195,7 @@ def calculate_ema(df: pd.DataFrame, fast: int = 9, slow: int = 21) -> dict:
     try:
         ema_fast = df["close"].ewm(span=fast, adjust=False).mean()
         ema_slow = df["close"].ewm(span=slow, adjust=False).mean()
-        return {
-            "fast": ema_fast,
-            "slow": ema_slow,
-        }
+        return {"fast": ema_fast, "slow": ema_slow}
     except Exception as e:
         logger.error(f"❌ EMA calculation error: {e}")
         return {}
@@ -211,15 +209,14 @@ def get_ema_signal(ema_data: dict) -> str:
         slow_curr = ema_data["slow"].iloc[-1]
         slow_prev = ema_data["slow"].iloc[-2]
 
-        # Crossover
         if fast_prev < slow_prev and fast_curr > slow_curr:
-            return "CALL"   # Golden cross
+            return "CALL"
         elif fast_prev > slow_prev and fast_curr < slow_curr:
-            return "PUT"    # Death cross
+            return "PUT"
         elif fast_curr > slow_curr:
-            return "CALL"   # Fast above slow = bullish
+            return "CALL"
         elif fast_curr < slow_curr:
-            return "PUT"    # Fast below slow = bearish
+            return "PUT"
         else:
             return "NEUTRAL"
     except Exception as e:
@@ -228,38 +225,76 @@ def get_ema_signal(ema_data: dict) -> str:
 
 
 # ─────────────────────────────────────────────────
-# VOLUME ANALYSIS
+# STOCHASTIC RSI — Replaces Volume
+# Works 100% on price — no volume needed
 # ─────────────────────────────────────────────────
 
-def get_volume_signal(df: pd.DataFrame, period: int = 20) -> str:
+def calculate_stoch_rsi(
+    df:        pd.DataFrame,
+    rsi_period: int = 14,
+    stoch_period: int = 14,
+    smooth_k:  int = 3,
+    smooth_d:  int = 3,
+) -> dict:
     """
-    Analyze volume for confirmation
-    Volume spike + direction = confirmation
-    Low volume = skip
+    Calculate Stochastic RSI
+    Catches reversals RSI misses
+    %K < 20 = Oversold  → CALL
+    %K > 80 = Overbought → PUT
     """
     try:
-        avg_volume  = df["volume"].rolling(window=period).mean().iloc[-1]
-        curr_volume = df["volume"].iloc[-1]
-        curr_close  = df["close"].iloc[-1]
-        prev_close  = df["close"].iloc[-2]
+        # First calculate RSI
+        delta    = df["close"].diff()
+        gain     = delta.where(delta > 0, 0.0)
+        loss     = -delta.where(delta < 0, 0.0)
+        avg_gain = gain.ewm(com=rsi_period - 1, min_periods=rsi_period).mean()
+        avg_loss = loss.ewm(com=rsi_period - 1, min_periods=rsi_period).mean()
+        rs       = avg_gain / avg_loss
+        rsi      = 100 - (100 / (1 + rs))
 
-        volume_ratio = curr_volume / avg_volume if avg_volume > 0 else 1
+        # Then apply Stochastic to RSI values
+        rsi_min  = rsi.rolling(window=stoch_period).min()
+        rsi_max  = rsi.rolling(window=stoch_period).max()
+        stoch    = (rsi - rsi_min) / (rsi_max - rsi_min) * 100
 
-        # Low volume = weak signal
-        if volume_ratio < 0.5:
-            return "LOW"
+        k_line   = stoch.rolling(window=smooth_k).mean()
+        d_line   = k_line.rolling(window=smooth_d).mean()
 
-        # High volume spike
-        if volume_ratio > 1.5:
-            if curr_close > prev_close:
-                return "CALL"   # Volume spike + up = bullish
-            else:
-                return "PUT"    # Volume spike + down = bearish
-
-        return "NEUTRAL"
-
+        return {"k": k_line, "d": d_line}
     except Exception as e:
-        logger.error(f"❌ Volume analysis error: {e}")
+        logger.error(f"❌ Stoch RSI calculation error: {e}")
+        return {}
+
+
+def get_stoch_rsi_signal(stoch_data: dict) -> str:
+    """
+    Get trading signal from Stochastic RSI
+    < 20 oversold  → CALL
+    > 80 overbought → PUT
+    Crossover adds confirmation
+    """
+    try:
+        k_curr = stoch_data["k"].iloc[-1]
+        k_prev = stoch_data["k"].iloc[-2]
+        d_curr = stoch_data["d"].iloc[-1]
+        d_prev = stoch_data["d"].iloc[-2]
+
+        # Oversold zone with bullish crossover
+        if k_curr < 20 and k_prev < d_prev and k_curr > d_curr:
+            return "CALL"
+        # Overbought zone with bearish crossover
+        elif k_curr > 80 and k_prev > d_prev and k_curr < d_curr:
+            return "PUT"
+        # Just oversold (no crossover yet)
+        elif k_curr < 20:
+            return "CALL"
+        # Just overbought (no crossover yet)
+        elif k_curr > 80:
+            return "PUT"
+        else:
+            return "NEUTRAL"
+    except Exception as e:
+        logger.error(f"❌ Stoch RSI signal error: {e}")
         return "NEUTRAL"
 
 
@@ -270,15 +305,15 @@ def get_volume_signal(df: pd.DataFrame, period: int = 20) -> str:
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """Calculate ATR for volatility measurement"""
     try:
-        high  = df["high"]
-        low   = df["low"]
-        close = df["close"]
+        high       = df["high"]
+        low        = df["low"]
+        close      = df["close"]
         prev_close = close.shift(1)
 
         tr = pd.concat([
             high - low,
             (high - prev_close).abs(),
-            (low  - prev_close).abs()
+            (low  - prev_close).abs(),
         ], axis=1).max(axis=1)
 
         atr = tr.ewm(span=period, adjust=False).mean()
@@ -296,13 +331,22 @@ def generate_signal(candles: list, pair: str = "") -> dict:
     """
     Generate complete trading signal from candle data
 
+    5 Indicators:
+    1. RSI
+    2. MACD
+    3. Bollinger Bands
+    4. EMA Cross
+    5. Stochastic RSI  ← replaces Volume
+
+    Minimum 4/5 must agree to trade.
+
     Returns:
     {
-        "direction":    "CALL" / "PUT" / "SKIP",
-        "confidence":   85.0,
-        "indicators":   {...},
-        "agreement":    4,
-        "reason":       "4/5 indicators agree CALL"
+        "direction":  "CALL" / "PUT" / "SKIP",
+        "confidence": 85.0,
+        "indicators": {...},
+        "agreement":  4,
+        "reason":     "4/5 indicators agree CALL"
     }
     """
     try:
@@ -310,30 +354,40 @@ def generate_signal(candles: list, pair: str = "") -> dict:
             return {
                 "direction":  "SKIP",
                 "confidence": 0,
-                "reason":     "Not enough candles"
+                "reason":     "Not enough candles",
             }
 
         df = prepare_dataframe(candles)
         if df.empty:
-            return {"direction": "SKIP", "confidence": 0, "reason": "Empty dataframe"}
+            return {
+                "direction":  "SKIP",
+                "confidence": 0,
+                "reason":     "Empty dataframe",
+            }
 
         # ── Calculate all indicators ──────────────
-        rsi      = calculate_rsi(df)
-        macd     = calculate_macd(df)
-        bb       = calculate_bollinger_bands(df)
-        ema      = calculate_ema(df)
+        rsi       = calculate_rsi(df)
+        macd      = calculate_macd(df)
+        bb        = calculate_bollinger_bands(df)
+        ema       = calculate_ema(df)
+        stoch_rsi = calculate_stoch_rsi(df)
 
-        rsi_val  = rsi.iloc[-1] if not rsi.empty else 50
+        rsi_val   = rsi.iloc[-1] if not rsi.empty else 50
 
         # ── Get signals ───────────────────────────
-        rsi_sig  = get_rsi_signal(rsi_val)
-        macd_sig = get_macd_signal(macd)
-        bb_sig   = get_bb_signal(bb, df)
-        ema_sig  = get_ema_signal(ema)
-        vol_sig  = get_volume_signal(df)
+        rsi_sig   = get_rsi_signal(rsi_val)
+        macd_sig  = get_macd_signal(macd)
+        bb_sig    = get_bb_signal(bb, df)
+        ema_sig   = get_ema_signal(ema)
+        stoch_sig = get_stoch_rsi_signal(stoch_rsi)
 
-        signals = [rsi_sig, macd_sig, bb_sig, ema_sig, vol_sig]
-        logger.debug(f"📊 {pair} Signals: RSI={rsi_sig} MACD={macd_sig} BB={bb_sig} EMA={ema_sig} VOL={vol_sig}")
+        signals = [rsi_sig, macd_sig, bb_sig, ema_sig, stoch_sig]
+
+        logger.debug(
+            f"📊 {pair} Signals: "
+            f"RSI={rsi_sig} MACD={macd_sig} "
+            f"BB={bb_sig} EMA={ema_sig} STOCHRSI={stoch_sig}"
+        )
 
         # ── Count agreements ──────────────────────
         calls = signals.count("CALL")
@@ -361,30 +415,29 @@ def generate_signal(candles: list, pair: str = "") -> dict:
             agreement  = 0
             confidence = 0
 
-        # Skip squeeze
+        # Skip BB squeeze — no volatility
         if bb_sig == "SQUEEZE":
             direction  = "SKIP"
             confidence = 0
-
-        # Skip low volume
-        if vol_sig == "LOW" and confidence > 0:
-            confidence -= 15
 
         result = {
             "direction":  direction,
             "confidence": min(confidence, 95),
             "agreement":  agreement,
             "indicators": {
-                "rsi":     {"value": round(rsi_val, 2), "signal": rsi_sig},
-                "macd":    {"signal": macd_sig},
-                "bb":      {"signal": bb_sig},
-                "ema":     {"signal": ema_sig},
-                "volume":  {"signal": vol_sig},
+                "rsi":      {"value": round(rsi_val, 2), "signal": rsi_sig},
+                "macd":     {"signal": macd_sig},
+                "bb":       {"signal": bb_sig},
+                "ema":      {"signal": ema_sig},
+                "stochrsi": {"signal": stoch_sig},
             },
             "reason": f"{agreement}/5 indicators agree {direction}",
         }
 
-        logger.info(f"⚡ {pair} Signal: {direction} | Confidence: {confidence}% | {agreement}/5 agree")
+        logger.info(
+            f"⚡ {pair} Signal: {direction} | "
+            f"Confidence: {confidence}% | {agreement}/5 agree"
+        )
         return result
 
     except Exception as e:
@@ -400,7 +453,6 @@ if __name__ == "__main__":
     print("\n⚡ APEX ORACLE — Signal Engine Test")
     print("─" * 45)
 
-    # Generate fake candles for testing
     import random
     fake_candles = []
     price = 1.1000
@@ -416,11 +468,10 @@ if __name__ == "__main__":
             "high":      round(high,  5),
             "low":       round(low,   5),
             "close":     round(close, 5),
-            "volume":    random.randint(100, 1000),
         })
         price = close
 
-    signal = generate_signal(fake_candles, "EURUSD-OTC")
+    signal = generate_signal(fake_candles, "EURUSD")
     print(f"\nSignal:     {signal['direction']}")
     print(f"Confidence: {signal['confidence']}%")
     print(f"Agreement:  {signal['agreement']}/5")

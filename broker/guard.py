@@ -1,6 +1,6 @@
 # ⚡ APEX ORACLE — AO-1.0
 # Manipulation Guard
-# Compares IQ Option price vs Yahoo Finance
+# Compares Deriv price vs Yahoo Finance
 # Detects broker price manipulation
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
@@ -14,20 +14,21 @@ from data.database import log_manipulation
 
 # ─────────────────────────────────────────────────
 # PAIR MAPPING
-# IQ Option pairs → Yahoo Finance symbols
+# Deriv pairs → Yahoo Finance symbols
 # ─────────────────────────────────────────────────
 
 PAIR_MAP = {
-    "EURUSD-OTC": "EURUSD=X",
-    "EURUSD":     "EURUSD=X",
-    "GBPUSD-OTC": "GBPUSD=X",
-    "GBPUSD":     "GBPUSD=X",
-    "GBPJPY-OTC": "GBPJPY=X",
-    "GBPJPY":     "GBPJPY=X",
-    "EURGBP-OTC": "EURGBP=X",
-    "EURGBP":     "EURGBP=X",
-    "USDJPY-OTC": "USDJPY=X",
-    "USDJPY":     "USDJPY=X",
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "GBPJPY": "GBPJPY=X",
+    "EURGBP": "EURGBP=X",
+    "USDJPY": "USDJPY=X",
+    # Volatility Indices have no Yahoo equivalent — skipped
+    "V75":    None,
+    "V50":    None,
+    "V25":    None,
+    "V10":    None,
+    "V100":   None,
 }
 
 # Maximum allowed price difference (0.5 pips)
@@ -45,12 +46,12 @@ _suspicious_pairs     = {}
 def get_yahoo_price(pair: str) -> float:
     """
     Get current price from Yahoo Finance
-    Used as reference price to verify IQ Option
+    Used as reference price to verify Deriv
     """
     try:
         yahoo_symbol = PAIR_MAP.get(pair)
         if not yahoo_symbol:
-            logger.warning(f"⚠️ No Yahoo symbol for {pair}")
+            logger.warning(f"⚠️ No Yahoo symbol for {pair} — guard skipped")
             return 0.0
 
         ticker = yf.Ticker(yahoo_symbol)
@@ -74,30 +75,41 @@ def get_yahoo_price(pair: str) -> float:
 # ─────────────────────────────────────────────────
 
 def compare_prices(
-    pair:      str,
-    iq_price:  float,
+    pair:         str,
+    deriv_price:  float,
 ) -> dict:
     """
-    Compare IQ Option price with Yahoo Finance
+    Compare Deriv price with Yahoo Finance
 
     Returns:
     {
-        "safe":       True/False,
-        "difference": 0.0003,
-        "iq_price":   1.08523,
-        "yahoo_price":1.08520,
-        "action":     "TRADE" / "SKIP"
+        "safe":          True/False,
+        "difference":    0.0003,
+        "deriv_price":   1.08523,
+        "yahoo_price":   1.08520,
+        "action":        "TRADE" / "SKIP"
     }
     """
     try:
-        if iq_price <= 0:
+        # Volatility indices have no external reference — always safe
+        if PAIR_MAP.get(pair) is None:
             return {
-                "safe":        False,
-                "difference":  0,
-                "iq_price":    iq_price,
-                "yahoo_price": 0,
-                "action":      "SKIP",
-                "reason":      "Invalid IQ price",
+                "safe":         True,
+                "difference":   0,
+                "deriv_price":  deriv_price,
+                "yahoo_price":  0,
+                "action":       "TRADE",
+                "reason":       "Volatility index — no external reference needed",
+            }
+
+        if deriv_price <= 0:
+            return {
+                "safe":         False,
+                "difference":   0,
+                "deriv_price":  deriv_price,
+                "yahoo_price":  0,
+                "action":       "SKIP",
+                "reason":       "Invalid Deriv price",
             }
 
         yahoo_price = get_yahoo_price(pair)
@@ -106,28 +118,28 @@ def compare_prices(
         if yahoo_price <= 0:
             logger.warning(f"⚠️ Yahoo unavailable for {pair} — skipping guard")
             return {
-                "safe":        True,
-                "difference":  0,
-                "iq_price":    iq_price,
-                "yahoo_price": 0,
-                "action":      "TRADE",
-                "reason":      "Yahoo unavailable — guard bypassed",
+                "safe":         True,
+                "difference":   0,
+                "deriv_price":  deriv_price,
+                "yahoo_price":  0,
+                "action":       "TRADE",
+                "reason":       "Yahoo unavailable — guard bypassed",
             }
 
-        difference = abs(iq_price - yahoo_price)
+        difference = abs(deriv_price - yahoo_price)
 
         if difference > MAX_DIFFERENCE:
             # Manipulation detected!
             logger.warning(
                 f"🚨 MANIPULATION DETECTED! {pair} | "
-                f"IQ: {iq_price} | Yahoo: {yahoo_price} | "
+                f"Deriv: {deriv_price} | Yahoo: {yahoo_price} | "
                 f"Diff: {difference:.6f}"
             )
 
             # Log to database
             log_manipulation({
                 "pair":         pair,
-                "iq_price":     iq_price,
+                "deriv_price":  deriv_price,
                 "yahoo_price":  yahoo_price,
                 "difference":   difference,
                 "action_taken": "TRADE_BLOCKED",
@@ -142,45 +154,45 @@ def compare_prices(
             _manipulation_history.append({
                 "timestamp":   datetime.now().isoformat(),
                 "pair":        pair,
-                "iq_price":    iq_price,
+                "deriv_price": deriv_price,
                 "yahoo_price": yahoo_price,
                 "difference":  difference,
             })
 
             return {
-                "safe":        False,
-                "difference":  round(difference, 6),
-                "iq_price":    iq_price,
-                "yahoo_price": yahoo_price,
-                "action":      "SKIP",
-                "reason":      f"Price manipulation detected! Diff: {difference:.6f}",
+                "safe":         False,
+                "difference":   round(difference, 6),
+                "deriv_price":  deriv_price,
+                "yahoo_price":  yahoo_price,
+                "action":       "SKIP",
+                "reason":       f"Price manipulation detected! Diff: {difference:.6f}",
             }
 
         # Prices match — safe to trade
         logger.debug(
             f"✅ {pair} price verified | "
-            f"IQ: {iq_price} | Yahoo: {yahoo_price} | "
+            f"Deriv: {deriv_price} | Yahoo: {yahoo_price} | "
             f"Diff: {difference:.6f}"
         )
 
         return {
-            "safe":        True,
-            "difference":  round(difference, 6),
-            "iq_price":    iq_price,
-            "yahoo_price": yahoo_price,
-            "action":      "TRADE",
-            "reason":      "Price verified — safe to trade",
+            "safe":         True,
+            "difference":   round(difference, 6),
+            "deriv_price":  deriv_price,
+            "yahoo_price":  yahoo_price,
+            "action":       "TRADE",
+            "reason":       "Price verified — safe to trade",
         }
 
     except Exception as e:
         logger.error(f"❌ Price comparison error: {e}")
         return {
-            "safe":        True,
-            "difference":  0,
-            "iq_price":    iq_price,
-            "yahoo_price": 0,
-            "action":      "TRADE",
-            "reason":      f"Guard error — bypassed: {e}",
+            "safe":         True,
+            "difference":   0,
+            "deriv_price":  deriv_price,
+            "yahoo_price":  0,
+            "action":       "TRADE",
+            "reason":       f"Guard error — bypassed: {e}",
         }
 
 
@@ -337,7 +349,7 @@ def get_manipulation_report() -> dict:
         "recent_incidents":   _manipulation_history[-5:],
         "pair_trust_scores":  {
             pair: get_pair_trust_score(pair)
-            for pair in ["EURUSD-OTC", "GBPUSD-OTC"]
+            for pair in ["EURUSD", "GBPUSD"]
         },
     }
 
@@ -351,21 +363,21 @@ if __name__ == "__main__":
     print("─" * 45)
 
     print("\nFetching Yahoo Finance price for EURUSD...")
-    yahoo = get_yahoo_price("EURUSD-OTC")
+    yahoo = get_yahoo_price("EURUSD")
     print(f"Yahoo EURUSD price: {yahoo}")
 
     if yahoo > 0:
         print("\nTesting price comparison...")
 
         # Safe price (close to Yahoo)
-        safe   = compare_prices("EURUSD-OTC", yahoo + 0.0002)
+        safe  = compare_prices("EURUSD", yahoo + 0.0002)
         print(f"\nSafe test:  {safe['action']} | Diff: {safe['difference']}")
 
         # Manipulated price (far from Yahoo)
-        manip  = compare_prices("EURUSD-OTC", yahoo + 0.0010)
+        manip = compare_prices("EURUSD", yahoo + 0.0010)
         print(f"Manip test: {manip['action']} | Diff: {manip['difference']}")
 
     print("\nPair trust scores:")
-    for pair in ["EURUSD-OTC", "GBPUSD-OTC"]:
+    for pair in ["EURUSD", "GBPUSD"]:
         trust = get_pair_trust_score(pair)
         print(f"  {pair}: {trust['trust_level']} ({trust['trust_score']}/100)")

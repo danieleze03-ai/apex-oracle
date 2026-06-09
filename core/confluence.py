@@ -17,14 +17,22 @@ from core.volatility import check_volatility
 # ─────────────────────────────────────────────────
 
 WEIGHTS = {
-    "indicators":  35,   # RSI, MACD, BB, EMA, Volume
-    "patterns":    25,   # Candlestick patterns
-    "volatility":  20,   # Volatility check
-    "timeframe":   20,   # Multi-timeframe agreement
+    "indicators": 35,   # RSI, MACD, BB, EMA, StochRSI
+    "patterns":   25,   # Candlestick patterns
+    "volatility": 20,   # Volatility check
+    "timeframe":  20,   # Multi-timeframe agreement
 }
 
-# Minimum score to execute trade
+# Minimum score to execute a trade
 MIN_CONFIDENCE = 75
+
+
+# ─────────────────────────────────────────────────
+# PAIR CONFIG — Weekend auto-switch
+# ─────────────────────────────────────────────────
+
+FOREX_PAIRS = ["EURUSD", "GBPUSD", "GBPJPY", "EURGBP", "USDJPY"]
+SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10"]
 
 
 # ─────────────────────────────────────────────────
@@ -36,10 +44,10 @@ def score_timeframes(candles_by_tf: dict, direction: str) -> dict:
     Check how many timeframes agree with signal direction
 
     candles_by_tf = {
-        "1":  [...],   # 1min candles
-        "5":  [...],   # 5min candles
-        "15": [...],   # 15min candles
-        "60": [...],   # 1hr candles
+        "1":  [...],
+        "5":  [...],
+        "15": [...],
+        "60": [...],
     }
     """
     try:
@@ -51,17 +59,16 @@ def score_timeframes(candles_by_tf: dict, direction: str) -> dict:
             if not candles or len(candles) < 20:
                 continue
 
-            df     = prepare_dataframe(candles)
             signal = generate_signal(candles)
             total += 1
-
             agrees = signal["direction"] == direction
+
             if agrees:
                 agreements += 1
 
             details[f"{tf}min"] = {
-                "direction": signal["direction"],
-                "agrees":    agrees,
+                "direction":  signal["direction"],
+                "agrees":     agrees,
                 "confidence": signal["confidence"],
             }
 
@@ -119,27 +126,24 @@ def score_indicators(signal: dict, direction: str) -> dict:
 def score_pattern(pattern: dict, direction: str) -> dict:
     """Score candlestick pattern alignment"""
     try:
-        pat_dir   = pattern.get("direction", "NEUTRAL")
-        strength  = pattern.get("strength", 0)
-        pat_name  = pattern.get("pattern", "None")
+        pat_dir  = pattern.get("direction", "NEUTRAL")
+        strength = pattern.get("strength",  0)
+        pat_name = pattern.get("pattern",   "None")
 
         if pat_dir == direction:
-            # Pattern agrees — score based on strength
-            score = (strength / 10) * 100
+            score  = (strength / 10) * 100
             agrees = True
         elif pat_dir == "NEUTRAL" or pat_name == "None":
-            # No pattern — neutral score
             score  = 50
             agrees = False
         else:
-            # Pattern disagrees — negative score
             score  = 0
             agrees = False
 
         return {
-            "pattern": pat_name,
-            "agrees":  agrees,
-            "score":   round(score, 1),
+            "pattern":  pat_name,
+            "agrees":   agrees,
+            "score":    round(score, 1),
             "strength": strength,
         }
 
@@ -155,7 +159,7 @@ def score_pattern(pattern: dict, direction: str) -> dict:
 def score_volatility(volatility: dict) -> dict:
     """Score volatility conditions"""
     try:
-        level     = volatility.get("level", "UNKNOWN")
+        level     = volatility.get("level",     "UNKNOWN")
         tradeable = volatility.get("tradeable", False)
 
         if level == "MEDIUM" and tradeable:
@@ -198,14 +202,19 @@ def calculate_confluence(
     → Volatility check     (20%)
     → Timeframe agreement  (20%)
 
+    Trade thresholds:
+    >= 75 → TRADE FULL stake
+    70-74 → TRADE HALF stake
+    < 70  → SKIP
+
     Returns:
     {
-        "direction":   "CALL" / "PUT" / "SKIP",
-        "confidence":  85.5,
-        "action":      "TRADE" / "SKIP",
-        "stake_size":  "FULL" / "HALF" / "SKIP",
-        "breakdown":   {...},
-        "reason":      "Strong CALL confluence"
+        "direction":  "CALL" / "PUT" / "SKIP",
+        "confidence": 85.5,
+        "action":     "TRADE" / "SKIP",
+        "stake_size": "FULL" / "HALF" / "SKIP",
+        "breakdown":  {...},
+        "reason":     "Strong CALL confluence"
     }
     """
     try:
@@ -217,8 +226,6 @@ def calculate_confluence(
                 "stake_size": "SKIP",
                 "reason":     "Not enough candle data",
             }
-
-        df = prepare_dataframe(candles_primary)
 
         # ── Step 1: Generate primary signal ──────
         primary_signal = generate_signal(candles_primary, pair)
@@ -234,6 +241,7 @@ def calculate_confluence(
             }
 
         # ── Step 2: Score each component ─────────
+        df         = prepare_dataframe(candles_primary)
         ind_score  = score_indicators(primary_signal, direction)
         pat_data   = detect_patterns(df)
         pat_score  = score_pattern(pat_data, direction)
@@ -248,7 +256,6 @@ def calculate_confluence(
             (vol_score["score"] * WEIGHTS["volatility"] / 100) +
             (tf_score["score"]  * WEIGHTS["timeframe"]  / 100)
         )
-
         final_score = round(final_score, 1)
 
         # ── Step 4: Volatility override ───────────
@@ -264,7 +271,7 @@ def calculate_confluence(
                     "pattern":    pat_score,
                     "volatility": vol_score,
                     "timeframes": tf_score,
-                }
+                },
             }
 
         # ── Step 5: Determine action ──────────────
@@ -276,14 +283,14 @@ def calculate_confluence(
             action     = "TRADE"
             stake_size = "FULL"
             reason     = f"✅ Strong {direction} confluence"
-        elif final_score >= 60:
+        elif final_score >= 70:
             action     = "TRADE"
             stake_size = "HALF"
-            reason     = f"⚡ Moderate {direction} confluence"
+            reason     = f"⚡ Moderate {direction} — half stake"
         else:
             action     = "SKIP"
             stake_size = "SKIP"
-            reason     = f"❌ Weak confluence — skipping"
+            reason     = f"❌ Weak confluence ({final_score}%) — skipping"
 
         # ── Step 6: Timeframe override ────────────
         if tf_score["agreements"] < 2 and action == "TRADE":
@@ -303,10 +310,9 @@ def calculate_confluence(
                 "pattern":    pat_score,
                 "volatility": vol_score,
                 "timeframes": tf_score,
-            }
+            },
         }
 
-        # ── Log result ────────────────────────────
         emoji = "🚀" if action == "TRADE" else "⏸️"
         logger.info(
             f"{emoji} {pair} Confluence: {direction} | "
@@ -336,7 +342,6 @@ if __name__ == "__main__":
     print("─" * 45)
 
     import random
-    price = 1.1000
 
     def make_candles(n=100):
         p = 1.1000
@@ -350,8 +355,7 @@ if __name__ == "__main__":
             result.append({
                 "timestamp": i * 300,
                 "open": o, "high": h,
-                "low": l,  "close": c,
-                "volume": random.randint(100, 500)
+                "low":  l, "close": c,
             })
             p = c
         return result
@@ -364,7 +368,7 @@ if __name__ == "__main__":
         "60": make_candles(100),
     }
 
-    result = calculate_confluence(primary, tf_data, "EURUSD-OTC")
+    result = calculate_confluence(primary, tf_data, "EURUSD")
 
     print(f"\nDirection:  {result['direction']}")
     print(f"Confidence: {result['confidence']}%")
