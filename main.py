@@ -639,8 +639,9 @@ def startup():
 
     # ── Start Telegram bot ────────────────────────
     logger.info("📱 Starting Telegram bot...")
-    telegram_app = start_telegram_bot()
     inject_dependencies(bot_state)
+    telegram_app = start_telegram_bot()
+    time.sleep(2)  # Give polling thread time to start
 
     # ── Send startup report ───────────────────────
     asyncio.run(send_startup_report(balance, mode))

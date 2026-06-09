@@ -398,7 +398,21 @@ def start_telegram_bot():
         app.add_handler(CommandHandler("risk",     cmd_risk))
         app.add_handler(CommandHandler("shutdown", cmd_shutdown))
 
-        logger.success("✅ Telegram bot started!")
+        # Start polling in background thread
+        import threading
+
+        def run_polling():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                app.run_polling(drop_pending_updates=True)
+            except Exception as e:
+                logger.error(f"❌ Telegram polling error: {e}")
+
+        thread = threading.Thread(target=run_polling, daemon=True)
+        thread.start()
+
+        logger.success("✅ Telegram bot started and polling!")
         return app
 
     except Exception as e:
