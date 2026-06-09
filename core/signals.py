@@ -306,7 +306,7 @@ def calculate_atr(df, period: int = 14):
 def generate_signal(candles: list, pair: str = "") -> dict:
     """
     Generate complete trading signal from candle data
-    5 Indicators — minimum 4/5 must agree to trade.
+    5 Indicators — minimum 3/5 must agree to trade (adjusted for Synthetics).
     """
     try:
         if len(candles) < 50:
@@ -349,22 +349,23 @@ def generate_signal(candles: list, pair: str = "") -> dict:
         calls = signals.count("CALL")
         puts  = signals.count("PUT")
 
-        if calls >= 4:
+        # 🔧 KEY CHANGE: Lowered from >= 4 to >= 3 for Synthetics
+        if calls >= 3:  # Was >= 4
             direction  = "CALL"
             agreement  = calls
             confidence = 75 + (calls * 5)
-        elif puts >= 4:
+        elif puts >= 3:  # Was >= 4
             direction  = "PUT"
             agreement  = puts
             confidence = 75 + (puts * 5)
-        elif calls == 3:
+        elif calls == 2:
             direction  = "CALL"
             agreement  = calls
-            confidence = 65
-        elif puts == 3:
+            confidence = 55
+        elif puts == 2:
             direction  = "PUT"
             agreement  = puts
-            confidence = 65
+            confidence = 55
         else:
             direction  = "SKIP"
             agreement  = 0
@@ -425,7 +426,7 @@ if __name__ == "__main__":
         })
         price = close
 
-    signal = generate_signal(fake_candles, "EURUSD")
+    signal = generate_signal(fake_candles, "V75")
     print(f"\nSignal:     {signal['direction']}")
     print(f"Confidence: {signal['confidence']}%")
     print(f"Agreement:  {signal['agreement']}/5")
