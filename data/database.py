@@ -219,6 +219,9 @@ def update_daily_performance(date: str = None) -> bool:
         client  = get_client()
         today   = date or datetime.now().date().isoformat()
 
+        # ── Delete existing row for today (fixes duplicate key violation) ──
+        client.table("performance").delete().eq("date", today).execute()
+
         result = client.table("trades")\
             .select("*")\
             .gte("timestamp", f"{today}T00:00:00")\
@@ -250,7 +253,8 @@ def update_daily_performance(date: str = None) -> bool:
             "worst_trade":     round(worst, 2),
         }
 
-        client.table("performance").upsert(perf_data).execute()
+        # ── Insert fresh row (no conflict) ──
+        client.table("performance").insert(perf_data).execute()
         logger.success(f"✅ Performance updated: {total} trades, {win_rate:.1f}% win rate")
         return True
 
