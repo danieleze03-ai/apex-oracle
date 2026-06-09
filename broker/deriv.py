@@ -195,9 +195,13 @@ def is_connected() -> bool:
     """Check if WebSocket is still alive"""
     global ws_connection
     try:
-        if ws_connection and not ws_connection.closed:
-            return True
-        return False
+        if ws_connection is None:
+            return False
+        if ws_connection.closed:
+            return False
+        # Send a ping to verify connection is truly alive
+        _run(ws_connection.ping())
+        return True
     except:
         return False
 
