@@ -17,13 +17,22 @@ load_dotenv()
 # ─────────────────────────────────────────────────
 
 def get_client():
-    from supabase import create_client, Client
     """Create and return Supabase client"""
+    from supabase import create_client
+    import httpx
+    from supabase.client import ClientOptions
+
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
+
     if not url or not key:
         raise ValueError("❌ Supabase URL or KEY missing from .env!")
-    return create_client(url, key)
+
+    options = ClientOptions(
+        httpx_client=httpx.Client(trust_env=False)
+    )
+
+    return create_client(url, key, options=options)
 
 
 # ─────────────────────────────────────────────────
@@ -212,7 +221,6 @@ def update_daily_performance(date: str = None) -> bool:
         client  = get_client()
         today   = date or datetime.now().date().isoformat()
 
-        # Get all trades for today
         result = client.table("trades")\
             .select("*")\
             .gte("timestamp", f"{today}T00:00:00")\
@@ -244,7 +252,6 @@ def update_daily_performance(date: str = None) -> bool:
             "worst_trade":     round(worst, 2),
         }
 
-        # Upsert (insert or update)
         client.table("performance").upsert(perf_data).execute()
         logger.success(f"✅ Performance updated: {total} trades, {win_rate:.1f}% win rate")
         return True
@@ -342,7 +349,6 @@ def update_pattern_stats(pattern_name: str, won: bool) -> bool:
     try:
         client = get_client()
 
-        # Get existing pattern stats
         result = client.table("patterns")\
             .select("*")\
             .eq("pattern_name", pattern_name)\
@@ -402,7 +408,6 @@ def test_connection() -> bool:
     """Test Supabase connection"""
     try:
         client = get_client()
-        # Simple query to test connection
         client.table("trades").select("id").limit(1).execute()
         logger.success("✅ Supabase connection successful!")
         return True
