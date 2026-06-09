@@ -22,7 +22,7 @@ load_dotenv()
 # BOT INSTANCE
 # ─────────────────────────────────────────────────
 
-TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
+TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Global references injected by main.py
@@ -30,8 +30,8 @@ _bot_state   = None
 _iq_instance = None
 
 
-def inject_dependencies(bot_state, iq_instance):
-    """Inject bot state and IQ instance from main.py"""
+def inject_dependencies(bot_state, iq_instance=None):
+    """Inject bot state from main.py"""
     global _bot_state, _iq_instance
     _bot_state   = bot_state
     _iq_instance = iq_instance
@@ -119,7 +119,7 @@ async def send_manipulation_alert(data: dict):
         f"🚨 <b>MANIPULATION DETECTED!</b>\n"
         f"{'─' * 30}\n"
         f"💱 <b>Pair:</b> {data['pair']}\n"
-        f"📊 <b>IQ Price:</b> {data['iq_price']}\n"
+        f"📊 <b>Deriv Price:</b> {data['deriv_price']}\n"
         f"📊 <b>Yahoo Price:</b> {data['yahoo_price']}\n"
         f"⚠️ <b>Difference:</b> {data['difference']:.6f}\n"
         f"🛡️ <b>Action:</b> Trade BLOCKED\n"
@@ -253,7 +253,7 @@ async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Handle /balance command"""
     try:
-        from broker.iqoption import get_balance
+        from broker.deriv import get_balance
         balance = get_balance()
         mode    = os.getenv("TRADING_MODE", "PRACTICE")
         await update.message.reply_text(
