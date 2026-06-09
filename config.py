@@ -52,8 +52,6 @@ SYNTHETIC_PAIRS = [
     "V25",
     "V10",
     "V100",
-    "V60",
-    "V90",
 ]
 
 # Max pairs running simultaneously

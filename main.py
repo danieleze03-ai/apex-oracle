@@ -104,7 +104,7 @@ from server.keep_alive import (
 # PAIR CONFIG — SYNTHETIC ONLY
 # ─────────────────────────────────────────────────
 
-SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10", "V100", "V60", "V90"]
+SYNTHETIC_PAIRS = ["V75", "V50", "V25", "V10", "V100"]
 
 def get_active_pair_list() -> list:
     """
