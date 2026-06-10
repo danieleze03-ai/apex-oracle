@@ -379,8 +379,7 @@ def generate_signal(candles: list, pair: str = "") -> dict:
             confidence = 0
 
         if bb_sig == "SQUEEZE":
-            direction  = "SKIP"
-            confidence = 0
+            bb_sig = "NEUTRAL"
 
         result = {
             "direction":  direction,
