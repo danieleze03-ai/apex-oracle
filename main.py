@@ -642,10 +642,10 @@ def startup():
     telegram_app = start_telegram_bot()
 
     # ════════════════════════════════════════════════════════════
-    # ✅ PERMANENT FIX 1: Stop any existing polling to prevent "Conflict".
-    #    This command tells any old bot instance to disconnect.
+    # ✅ PERMANENT FIX: We do NOT call stop_polling() here.
+    #    The library version you are using does not have this attribute.
+    #    It caused the crash.
     # ════════════════════════════════════════════════════════════
-    asyncio.run(telegram_app.stop_polling())
 
     # ═══════════════════════════════════════════════════════════
     # 🔧 [TEMPORARY] TEST TRADE COMMAND — Bypasses all logic
@@ -730,7 +730,7 @@ def startup():
     # ═══════════════════════════════════════════════════════════
 
     # ════════════════════════════════════════════════════════════
-    # ✅ PERMANENT FIX 2: Start Telegram polling in a background thread.
+    # ✅ PERMANENT FIX: Start Telegram polling in a background thread.
     #    run_polling() blocks, so it must be run in a separate thread.
     # ════════════════════════════════════════════════════════════
     def run_polling_thread():
