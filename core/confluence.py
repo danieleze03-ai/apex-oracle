@@ -1,3 +1,112 @@
+# ⚡ APEX ORACLE — AO-1.0
+# Confluence Engine — Combines all signals
+# "We Don't Predict. We Know."
+# ─────────────────────────────────────────────────
+
+from loguru import logger
+from core.signals   import generate_signal, prepare_dataframe
+from core.patterns  import detect_patterns
+from core.volatility import check_volatility
+
+# ─────────────────────────────────────────────────
+# WEIGHTS — How much each factor contributes
+# ─────────────────────────────────────────────────
+
+WEIGHTS = {
+    "indicators": 40,
+    "patterns":   25,
+    "volatility": 15,
+    "timeframe":  20,
+}
+
+
+# ─────────────────────────────────────────────────
+# SCORING HELPERS
+# ─────────────────────────────────────────────────
+
+def score_indicators(signal: dict, direction: str) -> dict:
+    indicators = signal.get("indicators", {})
+    details    = indicators.get("details", {})
+    agreements = 0
+    total      = 0
+
+    for name, data in details.items():
+        sig = data.get("signal", "NEUTRAL")
+        if sig != "NEUTRAL":
+            total += 1
+            if sig == direction:
+                agreements += 1
+
+    score = (agreements / total * 100) if total > 0 else 0
+    return {
+        "score":       round(score, 1),
+        "agreements":  agreements,
+        "total":       total,
+        "details":     details,
+    }
+
+
+def score_pattern(pat_data: dict, direction: str) -> dict:
+    pattern   = pat_data.get("pattern", "None")
+    pat_dir   = pat_data.get("direction", "NEUTRAL")
+    strength  = pat_data.get("strength", 0)
+
+    if pattern == "None" or pat_dir == "NEUTRAL":
+        return {"score": 50, "pattern": pattern, "strength": 0}
+
+    if pat_dir == direction:
+        score = 50 + (strength * 5)
+    else:
+        score = 50 - (strength * 5)
+
+    return {
+        "score":    min(100, max(0, score)),
+        "pattern":  pattern,
+        "strength": strength,
+    }
+
+
+def score_volatility(vol_data: dict) -> dict:
+    level = vol_data.get("level", "MEDIUM")
+    scores = {
+        "LOW":     30,
+        "MEDIUM":  80,
+        "HIGH":    40,
+        "EXTREME": 0,
+    }
+    return {
+        "score": scores.get(level, 50),
+        "level": level,
+    }
+
+
+def score_timeframes(candles_by_tf: dict, direction: str) -> dict:
+    agreements = 0
+    total      = 0
+
+    for tf, candles in candles_by_tf.items():
+        if tf == "5":
+            continue
+        if not candles or len(candles) < 20:
+            continue
+        sig = generate_signal(candles, "")
+        if sig["direction"] != "SKIP":
+            total += 1
+            if sig["direction"] == direction:
+                agreements += 1
+
+    score = (agreements / total * 100) if total > 0 else 50
+    return {
+        "score":      round(score, 1),
+        "agreements": agreements,
+        "total":      total,
+    }
+
+
+# ─────────────────────────────────────────────────
+# MASTER CONFLUENCE CALCULATOR
+# ─────────────────────────────────────────────────
+
 def calculate_confluence(
     candles_primary: list,
     candles_by_tf:   dict,
@@ -41,13 +150,10 @@ def calculate_confluence(
         )
         final_score = round(final_score, 1)
 
-        # ⭐ NEW RULE: If 3 or more indicators agree AND the final score is above 65, WE TRADE
-        # This overrides the volatility block. This is what will make your bot trade.
         if ind_score["agreements"] >= 3 and final_score >= 65:
-            # Check volatility override
             if not vol_data["tradeable"]:
                 logger.warning(f"⚠️ Volatility flagged as non-tradeable, but overriding due to strong signal ({ind_score['agreements']}/5 agree, Score: {final_score}%).")
-            
+
             if final_score >= 90:
                 action     = "TRADE"
                 stake_size = "FULL"
@@ -69,7 +175,6 @@ def calculate_confluence(
             stake_size = "SKIP"
             reason     = f"❌ Weak confluence ({final_score}%) — skipping"
 
-        # ── Step 6: Timeframe override ────────────
         if tf_score["total"] > 0 and tf_score["agreements"] == 0 and action == "TRADE":
             action     = "SKIP"
             stake_size = "SKIP"
