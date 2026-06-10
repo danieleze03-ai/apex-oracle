@@ -90,7 +90,7 @@ Rules:
 # GROQ AI DECISION — WITH JSON FALLBACK
 # ─────────────────────────────────────────────────
 
-GROQ_MODEL = "llama3-8b-8192"  # ← Updated model (llama3-70b-8192 decommissioned)
+GROQ_MODEL = "llama-3.3-70b-versatile"  # ← Updated model (llama3-70b-8192 decommissioned)
 
 
 def get_ai_decision(trade_data: dict) -> dict:
