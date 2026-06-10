@@ -199,7 +199,7 @@ def get_ai_decision(trade_data: dict) -> dict:
     except Exception as e:
         logger.error(f"❌ Groq AI error: {e}")
         # ── Fallback: approve based on confluence score alone ──
-        confluence  = trade_data.get("confluence_score", 0)
+        confluence  = float(trade_data.get("confluence_score", 0))
         direction   = trade_data.get("primary_direction", "SKIP")
         approved    = confluence >= 65 and direction in ["CALL", "PUT"]
         logger.warning(
