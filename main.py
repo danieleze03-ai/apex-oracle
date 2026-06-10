@@ -163,6 +163,7 @@ def process_signal(pair: str) -> dict:
     4. Ask Groq AI
     5. Return final decision
     """
+    from loguru import logger  # ✅ FIX: import logger locally
     try:
         # ── Fetch candles ─────────────────────────
         all_candles = fetch_all_timeframes(pair)
