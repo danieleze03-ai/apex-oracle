@@ -10,7 +10,7 @@ import time
 import asyncio
 import threading
 from datetime import datetime
-from loguru import logger  # ✅ FIX: Import logger at the very top for global access
+from loguru import logger
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -129,7 +129,6 @@ bot_state = {
     "last_signal":  None,
     "last_trade":   None,
     "start_time":   datetime.now(),
-    "last_daily_summary_date": None,  # 🆕 Track last daily summary date
 }
 
 TIMEFRAMES    = [1, 5, 15, 60]
@@ -286,9 +285,6 @@ def process_signal(pair: str) -> dict:
         }
 
     except Exception as e:
-        # ════════════════════════════════════════════════════════════
-        # ✅ PERMANENT FIX: The global logger from the top of the file will ALWAYS exist.
-        # ════════════════════════════════════════════════════════════
         logger.error(f"❌ Signal processing error: {e}")
         return {"action": "SKIP", "reason": str(e)}
 
@@ -451,14 +447,10 @@ def run_daily_tasks():
     now = datetime.now()
 
     # Daily report at 8PM WAT
-    # 🔧 FIX: Ensure it only runs once per day by tracking the date in bot_state
-    if now.hour == 20:
-        if bot_state.get("last_daily_summary_date") != now.date():
-            logger.info("📊 Running daily report...")
-            asyncio.run(send_daily_summary())
-            update_daily_performance()
-            bot_state["last_daily_summary_date"] = now.date()
-            logger.success("✅ Daily report sent successfully.")
+    if now.hour == 20 and now.minute < 2:
+        logger.info("📊 Running daily report...")
+        asyncio.run(send_daily_summary())
+        update_daily_performance()
 
     # Weekly evolution Sunday midnight
     if should_run_evolution():
@@ -529,7 +521,6 @@ def trading_loop():
                 continue
 
             # ── Check session (REMOVED) ────────────
-            # 🔧 Synthetic-only 24/7 — no session limitations
             session = {"allowed": True, "session": "SYNTHETIC-24/7"}
 
             # ── Check news block ──────────────────
@@ -562,20 +553,16 @@ def trading_loop():
                     )
                     execute_trade(signal)
                     trade_found = True
-                    break  # Exit loop after one trade
+                    break
                 else:
                     logger.debug(
                         f"⏭️ {pair} skipped: {signal['reason']}"
                     )
 
-            # ── If no trade found, move on ─────────
             if not trade_found:
                 logger.debug("No tradeable signal found in this cycle.")
 
-            # ── Run daily tasks ───────────────────
             run_daily_tasks()
-
-            # ── Wait before next scan ─────────────
             time.sleep(LOOP_INTERVAL)
 
         except KeyboardInterrupt:
@@ -600,7 +587,6 @@ def startup():
         logger.critical(f"❌ Missing environment variables: {', '.join(missing)}")
         return False
 
-    # ── Setup logging ─────────────────────────────
     setup_logger(os.getenv("LOG_LEVEL", "INFO"))
 
     logger.info("=" * 50)
@@ -608,18 +594,13 @@ def startup():
     logger.info("   We Don't Predict. We Know.")
     logger.info("=" * 50)
 
-    # ── Start keep alive server ───────────────────
-    logger.info("🌐 Starting keep-alive server...")
     start_keep_alive()
 
-    # ── Connect to Deriv ──────────────────────────
-    logger.info("🔌 Connecting to Deriv.com...")
     if not connect():
         logger.critical("❌ Cannot connect to Deriv.com!")
         logger.critical("Check DERIV_API_TOKEN in .env")
         return False
 
-    # ── Get balance ───────────────────────────────
     balance = get_balance()
     mode    = os.getenv("TRADING_MODE", "PRACTICE")
     bot_state["balance"] = balance
@@ -627,17 +608,11 @@ def startup():
     update_status("balance", balance)
     update_status("mode",    mode)
 
-    # ── Set starting balance for risk calc ────────
     set_starting_balance(balance)
 
-    # ── Start Telegram bot ────────────────────────
-    logger.info("📱 Starting Telegram bot...")
     inject_dependencies(bot_state)
     telegram_app = start_telegram_bot()
 
-    # ═══════════════════════════════════════════════════════════
-    # 🔧 [TEMPORARY] TEST TRADE COMMAND — Bypasses all logic
-    # ═══════════════════════════════════════════════════════════
     from telegram.ext import CommandHandler
 
     async def test_trade(update, context):
@@ -713,21 +688,23 @@ def startup():
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {e}")
 
-    # Add the handler to your existing Telegram app
     telegram_app.add_handler(CommandHandler("testtrade", test_trade))
-    # ═══════════════════════════════════════════════════════════
 
-    time.sleep(2)
-
-    # ── Send startup report ───────────────────────
     asyncio.run(send_startup_report(balance, mode))
 
-    # ── Detect weekend mode ───────────────────────
-    active_pairs = get_active_pair_list()
-    is_weekend   = False  # Always False — synthetic-only
     pair_display = "V75, V50, V25, V10, V100"
 
-    return telegram_app  # ✅ Return the app so we can use it later
+    logger.success("=" * 50)
+    logger.success(f"✅ APEX ORACLE IS ONLINE!")
+    logger.success(f"💰 Balance:         ${balance:.2f}")
+    logger.success(f"📊 Mode:            {mode}")
+    logger.success(f"🎯 Min Confidence:  75%")
+    logger.success(f"💱 Active Pairs:    {pair_display}")
+    logger.success(f"📅 Trading:         SYNTHETIC-ONLY 24/7")
+    logger.success(f"🔌 Broker:          Deriv.com")
+    logger.success("=" * 50)
+
+    return telegram_app
 
 
 # ─────────────────────────────────────────────────
@@ -736,20 +713,20 @@ def startup():
 
 if __name__ == "__main__":
     try:
-        # 1. Start the Telegram bot and get the app instance
         app = startup()
         if not app:
             logger.critical("❌ Startup failed! Check your .env file")
             exit(1)
 
-        # 2. Start the trading loop in a background thread
-        #    so it doesn't block the main thread for Telegram polling
+        # Start trading loop in a background thread
         trading_thread = threading.Thread(target=trading_loop, daemon=True)
         trading_thread.start()
 
-        # 3. Start Telegram polling in the main thread
-        logger.info("🚀 Starting Telegram polling in main thread...")
-        app.run_polling()
+        # ❌ DO NOT CALL app.run_polling() HERE — it is already handled inside start_telegram_bot()
+
+        # Keep the main thread alive by waiting
+        while True:
+            time.sleep(1)
 
     except KeyboardInterrupt:
         logger.info("\n⚡ APEX ORACLE shutting down...")
