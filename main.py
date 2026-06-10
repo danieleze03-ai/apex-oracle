@@ -304,6 +304,7 @@ def execute_trade(signal: dict) -> bool:
     4. Return immediately so main loop stays responsive
     """
     try:
+        bot_state["trade_active"] = True
         pair      = signal["pair"]
         direction = signal["direction"]
         expiry    = signal.get("expiry", 5)
@@ -430,6 +431,7 @@ def execute_trade(signal: dict) -> bool:
                 f"P&L: ${profit:.2f} | "
                 f"Balance: ${new_balance:.2f}"
             )
+            bot_state["trade_active"] = False
 
         threading.Thread(target=wait_for_result, daemon=True).start()
 
@@ -535,6 +537,12 @@ def trading_loop():
             # ── Scan ALL synthetic pairs ───────────
             active_pairs = get_active_pair_list()
             trade_found = False
+
+            # Skip if a trade is already running
+            if bot_state.get("trade_active"):
+                logger.info("⏸️ Trade already active — waiting for result...")
+                time.sleep(LOOP_INTERVAL)
+                continue
 
             for pair in active_pairs:
                 logger.info(
