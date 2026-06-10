@@ -48,5 +48,4 @@ def setup_logger(log_level: str = "INFO"):
     return logger
 
 
-# Initialize on import
-setup_logger(os.getenv("LOG_LEVEL", "INFO"))
+# NOTE: setup_logger() is called explicitly in startup() — do not call here
