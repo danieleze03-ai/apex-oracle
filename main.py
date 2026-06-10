@@ -285,7 +285,9 @@ def process_signal(pair: str) -> dict:
         }
 
     except Exception as e:
+        import traceback
         logger.error(f"❌ Signal processing error: {e}")
+        logger.error(traceback.format_exc())
         return {"action": "SKIP", "reason": str(e)}
 
 
