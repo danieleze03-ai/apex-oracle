@@ -640,22 +640,12 @@ def startup():
     logger.info("📱 Starting Telegram bot...")
     inject_dependencies(bot_state)
     telegram_app = start_telegram_bot()
-    
-    # ════════════════════════════════════════════════════════════
-    # ✅ PERMANENT FIX: Clear any old Telegram polling instances
-    #    to prevent "Conflict" error.
-    # ════════════════════════════════════════════════════════════
-    try:
-        # Attempt to stop any existing polling for this bot instance
-        asyncio.run(telegram_app.stop_polling())
-    except Exception:
-        pass # If it fails, it's likely because polling wasn't running.
-    
-    # Now start polling safely
-    asyncio.run(telegram_app.start_polling())
-    # ════════════════════════════════════════════════════════════
 
-    time.sleep(2)
+    # ════════════════════════════════════════════════════════════
+    # ✅ PERMANENT FIX 1: Stop any existing polling to prevent "Conflict".
+    #    This command tells any old bot instance to disconnect.
+    # ════════════════════════════════════════════════════════════
+    asyncio.run(telegram_app.stop_polling())
 
     # ═══════════════════════════════════════════════════════════
     # 🔧 [TEMPORARY] TEST TRADE COMMAND — Bypasses all logic
@@ -738,6 +728,20 @@ def startup():
     # Add the handler to your existing Telegram app
     telegram_app.add_handler(CommandHandler("testtrade", test_trade))
     # ═══════════════════════════════════════════════════════════
+
+    # ════════════════════════════════════════════════════════════
+    # ✅ PERMANENT FIX 2: Start Telegram polling in a background thread.
+    #    run_polling() blocks, so it must be run in a separate thread.
+    # ════════════════════════════════════════════════════════════
+    def run_polling_thread():
+        logger.info("🚀 Starting Telegram polling in background thread...")
+        telegram_app.run_polling()
+    
+    polling_thread = threading.Thread(target=run_polling_thread, daemon=True)
+    polling_thread.start()
+    # ════════════════════════════════════════════════════════════
+
+    time.sleep(2)
 
     # ── Send startup report ───────────────────────
     asyncio.run(send_startup_report(balance, mode))
