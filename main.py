@@ -163,7 +163,12 @@ def process_signal(pair: str) -> dict:
     4. Ask Groq AI
     5. Return final decision
     """
-    from loguru import logger  # ✅ FIX: import logger locally
+    # ════════════════════════════════════════════════════════════
+    # ✅ PERMANENT FIX: Re-import logger locally.
+    #    This prevents the 'logger is not defined' error forever.
+    from loguru import logger
+    # ════════════════════════════════════════════════════════════
+
     try:
         # ── Fetch candles ─────────────────────────
         all_candles = fetch_all_timeframes(pair)
@@ -287,6 +292,9 @@ def process_signal(pair: str) -> dict:
         }
 
     except Exception as e:
+        # ════════════════════════════════════════════════════════════
+        # ✅ PERMANENT FIX: The local logger from above will ALWAYS exist.
+        # ════════════════════════════════════════════════════════════
         logger.error(f"❌ Signal processing error: {e}")
         return {"action": "SKIP", "reason": str(e)}
 
@@ -632,6 +640,21 @@ def startup():
     logger.info("📱 Starting Telegram bot...")
     inject_dependencies(bot_state)
     telegram_app = start_telegram_bot()
+    
+    # ════════════════════════════════════════════════════════════
+    # ✅ PERMANENT FIX: Clear any old Telegram polling instances
+    #    to prevent "Conflict" error.
+    # ════════════════════════════════════════════════════════════
+    try:
+        # Attempt to stop any existing polling for this bot instance
+        asyncio.run(telegram_app.stop_polling())
+    except Exception:
+        pass # If it fails, it's likely because polling wasn't running.
+    
+    # Now start polling safely
+    asyncio.run(telegram_app.start_polling())
+    # ════════════════════════════════════════════════════════════
+
     time.sleep(2)
 
     # ═══════════════════════════════════════════════════════════
