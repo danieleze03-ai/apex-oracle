@@ -26,23 +26,22 @@ WEIGHTS = {
 
 def score_indicators(signal: dict, direction: str) -> dict:
     indicators = signal.get("indicators", {})
-    details    = indicators.get("details", {})
     agreements = 0
     total      = 0
 
-    for name, data in details.items():
+    for name, data in indicators.items():
         sig = data.get("signal", "NEUTRAL")
-        if sig != "NEUTRAL":
+        if sig not in ("NEUTRAL", "SQUEEZE"):
             total += 1
             if sig == direction:
                 agreements += 1
 
     score = (agreements / total * 100) if total > 0 else 0
     return {
-        "score":       round(score, 1),
-        "agreements":  agreements,
-        "total":       total,
-        "details":     details,
+        "score":      round(score, 1),
+        "agreements": agreements,
+        "total":      total,
+        "details":    indicators,
     }
 
 
@@ -149,6 +148,9 @@ def calculate_confluence(
             (tf_score["score"]  * WEIGHTS["timeframe"]  / 100)
         )
         final_score = round(final_score, 1)
+
+        if ind_score["agreements"] >= 3:
+            final_score = max(final_score, 75.0)
 
         if ind_score["agreements"] >= 3 and final_score >= 65:
             if not vol_data["tradeable"]:
