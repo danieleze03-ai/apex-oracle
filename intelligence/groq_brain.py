@@ -95,13 +95,26 @@ GROQ_MODEL = "llama-3.3-70b-versatile"  # ← Updated model (llama3-70b-8192 dec
 
 def get_ai_decision(trade_data: dict) -> dict:
     """
-    Get Groq AI trading decision with robust JSON fallback
+    Internal decision engine — no external API needed.
+    Approves trade if confluence score >= 65.
     """
-    try:
-        client = get_groq_client()
-        prompt = build_trade_prompt(trade_data)
+    confluence = float(trade_data.get("confluence_score", 0))
+    direction  = trade_data.get("primary_direction", "SKIP")
+    approved   = confluence >= 65 and direction in ["CALL", "PUT"]
 
-        logger.info("🧠 Asking Groq AI for trade decision...")
+    logger.info(
+        f"🧠 Internal AI: {'✅ APPROVED' if approved else '❌ SKIP'} | "
+        f"Confluence: {confluence}%"
+    )
+
+    return {
+        "decision":    direction if approved else "SKIP",
+        "confidence":  confluence,
+        "reasoning":   f"Confluence score {confluence}% {'meets' if approved else 'below'} threshold",
+        "risk_level":  "LOW" if confluence >= 80 else "MEDIUM",
+        "key_factors": [f"Confluence: {confluence}%"],
+        "approved":    approved,
+    }
 
         response = client.chat.completions.create(
             model    = GROQ_MODEL,
