@@ -58,14 +58,14 @@ def calculate_rsi(df, period: int = 14):
 
 def get_rsi_signal(rsi_value: float) -> str:
     """Get trading signal from RSI value"""
-    if rsi_value < 35:
+    if rsi_value < 40:
         return "CALL"
-    elif rsi_value > 65:
+    elif rsi_value > 60:
         return "PUT"
-    elif rsi_value < 45:
-        return "CALL"    # Leaning oversold
-    elif rsi_value > 55:
-        return "PUT"     # Leaning overbought
+    elif rsi_value < 48:
+        return "CALL"
+    elif rsi_value > 52:
+        return "PUT"
     else:
         return "NEUTRAL"
 
@@ -155,16 +155,21 @@ def calculate_bollinger_bands(df, period: int = 20, std: float = 2.0) -> dict:
 def get_bb_signal(bb_data: dict, df) -> str:
     """Get trading signal from Bollinger Bands"""
     try:
-        close = df["close"].iloc[-1]
-        upper = bb_data["upper"].iloc[-1]
-        lower = bb_data["lower"].iloc[-1]
-        width = bb_data["width"].iloc[-1]
+        close  = df["close"].iloc[-1]
+        upper  = bb_data["upper"].iloc[-1]
+        lower  = bb_data["lower"].iloc[-1]
+        middle = bb_data["middle"].iloc[-1]
+        width  = bb_data["width"].iloc[-1]
 
         if width < 0.5:
             return "SQUEEZE"
-        if close <= lower:
+        if close <= lower * 1.001:
             return "CALL"
-        elif close >= upper:
+        elif close >= upper * 0.999:
+            return "PUT"
+        elif close < middle:
+            return "CALL"
+        elif close > middle:
             return "PUT"
         else:
             return "NEUTRAL"
