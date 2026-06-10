@@ -579,6 +579,7 @@ def trading_loop():
 
 def startup():
     """Initialize all systems and start bot"""
+    setup_logger(os.getenv("LOG_LEVEL", "INFO"))
 
     # ── Check all required environment variables ──
     required_vars = ["DERIV_API_TOKEN", "GROQ_API_KEY", "TELEGRAM_BOT_TOKEN", "SUPABASE_URL", "SUPABASE_KEY"]
