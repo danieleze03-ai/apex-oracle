@@ -10,7 +10,7 @@ import time
 import asyncio
 import threading
 from datetime import datetime
-from loguru import logger
+from loguru import logger  # ✅ FIX: Import logger at the very top for global access
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -163,12 +163,6 @@ def process_signal(pair: str) -> dict:
     4. Ask Groq AI
     5. Return final decision
     """
-    # ════════════════════════════════════════════════════════════
-    # ✅ PERMANENT FIX: Re-import logger locally.
-    #    This prevents the 'logger is not defined' error forever.
-    from loguru import logger
-    # ════════════════════════════════════════════════════════════
-
     try:
         # ── Fetch candles ─────────────────────────
         all_candles = fetch_all_timeframes(pair)
@@ -293,7 +287,7 @@ def process_signal(pair: str) -> dict:
 
     except Exception as e:
         # ════════════════════════════════════════════════════════════
-        # ✅ PERMANENT FIX: The local logger from above will ALWAYS exist.
+        # ✅ PERMANENT FIX: The global logger from the top of the file will ALWAYS exist.
         # ════════════════════════════════════════════════════════════
         logger.error(f"❌ Signal processing error: {e}")
         return {"action": "SKIP", "reason": str(e)}
@@ -641,12 +635,6 @@ def startup():
     inject_dependencies(bot_state)
     telegram_app = start_telegram_bot()
 
-    # ════════════════════════════════════════════════════════════
-    # ✅ PERMANENT FIX: We do NOT call stop_polling() here.
-    #    The library version you are using does not have this attribute.
-    #    It caused the crash.
-    # ════════════════════════════════════════════════════════════
-
     # ═══════════════════════════════════════════════════════════
     # 🔧 [TEMPORARY] TEST TRADE COMMAND — Bypasses all logic
     # ═══════════════════════════════════════════════════════════
@@ -729,18 +717,6 @@ def startup():
     telegram_app.add_handler(CommandHandler("testtrade", test_trade))
     # ═══════════════════════════════════════════════════════════
 
-    # ════════════════════════════════════════════════════════════
-    # ✅ PERMANENT FIX: Start Telegram polling in a background thread.
-    #    run_polling() blocks, so it must be run in a separate thread.
-    # ════════════════════════════════════════════════════════════
-    def run_polling_thread():
-        logger.info("🚀 Starting Telegram polling in background thread...")
-        telegram_app.run_polling()
-    
-    polling_thread = threading.Thread(target=run_polling_thread, daemon=True)
-    polling_thread.start()
-    # ════════════════════════════════════════════════════════════
-
     time.sleep(2)
 
     # ── Send startup report ───────────────────────
@@ -751,17 +727,7 @@ def startup():
     is_weekend   = False  # Always False — synthetic-only
     pair_display = "V75, V50, V25, V10, V100"
 
-    logger.success("=" * 50)
-    logger.success(f"✅ APEX ORACLE IS ONLINE!")
-    logger.success(f"💰 Balance:         ${balance:.2f}")
-    logger.success(f"📊 Mode:            {mode}")
-    logger.success(f"🎯 Min Confidence:  75%")
-    logger.success(f"💱 Active Pairs:    {pair_display}")
-    logger.success(f"📅 Trading:         SYNTHETIC-ONLY 24/7")
-    logger.success(f"🔌 Broker:          Deriv.com")
-    logger.success("=" * 50)
-
-    return True
+    return telegram_app  # ✅ Return the app so we can use it later
 
 
 # ─────────────────────────────────────────────────
@@ -770,10 +736,21 @@ def startup():
 
 if __name__ == "__main__":
     try:
-        if startup():
-            trading_loop()
-        else:
+        # 1. Start the Telegram bot and get the app instance
+        app = startup()
+        if not app:
             logger.critical("❌ Startup failed! Check your .env file")
+            exit(1)
+
+        # 2. Start the trading loop in a background thread
+        #    so it doesn't block the main thread for Telegram polling
+        trading_thread = threading.Thread(target=trading_loop, daemon=True)
+        trading_thread.start()
+
+        # 3. Start Telegram polling in the main thread
+        logger.info("🚀 Starting Telegram polling in main thread...")
+        app.run_polling()
+
     except KeyboardInterrupt:
         logger.info("\n⚡ APEX ORACLE shutting down...")
         asyncio.run(send_alert(
