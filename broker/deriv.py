@@ -426,13 +426,14 @@ async def _place_trade_async(
             f"{pair} {contract} ${stake}"
         )
         return {
-            "success":   True,
-            "trade_id":  trade_id,
-            "pair":      pair,
-            "direction": direction,
-            "stake":     stake,
-            "expiry":    expiry,
-            "timestamp": datetime.now().isoformat(),
+            "success":    True,
+            "trade_id":   trade_id,
+            "pair":       pair,
+            "direction":  direction,
+            "stake":      stake,
+            "expiry":     expiry,
+            "entry_price": buy_price,
+            "timestamp":  datetime.now().isoformat(),
         }
 
     except Exception as e:
@@ -487,16 +488,18 @@ async def _check_trade_result_async(trade_id: int) -> dict:
 
         profit = float(contract.get("profit", 0))
 
+        exit_price = float(contract.get("exit_tick_display_value", 0) or contract.get("current_spot", 0) or 0)
+
         if profit > 0:
             logger.success(
                 f"✅ Trade {trade_id} → WIN! Profit: ${profit:.2f}"
             )
-            return {"result": "WIN", "profit": profit}
+            return {"result": "WIN", "profit": profit, "exit_price": exit_price}
         else:
             logger.warning(
                 f"❌ Trade {trade_id} → LOSS! ${profit:.2f}"
             )
-            return {"result": "LOSS", "profit": profit}
+            return {"result": "LOSS", "profit": profit, "exit_price": exit_price}
 
     except Exception as e:
         logger.error(f"❌ Failed to check trade result: {e}")

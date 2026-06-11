@@ -224,11 +224,13 @@ def can_trade(balance: float) -> dict:
             logger.info("▶️ Pause lifted — resuming trading")
 
     # ── Check 3: Daily trade limit ────────────────
+    # DISABLED — Synthetics run 24/7, no daily cap needed
+    # MAX_DAILY_TRADES kept for reporting/stats only
     if risk_state["trades_today"] >= MAX_DAILY_TRADES:
-        return {
-            "allowed": False,
-            "reason":  f"📊 Daily trade limit reached ({MAX_DAILY_TRADES} trades)"
-        }
+        logger.debug(
+            f"📊 Info: {risk_state['trades_today']} trades today "
+            f"(limit disabled for 24/7 Synthetics)"
+        )
 
     # ── Check 4: Daily loss limit ─────────────────
     if risk_state["starting_balance"] > 0:

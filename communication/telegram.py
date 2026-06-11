@@ -89,6 +89,7 @@ async def send_trade_entry(trade: dict):
         f"🕯️ <b>Pattern:</b> {trade.get('pattern', 'None')}\n"
         f"🧠 <b>AI Approved:</b> ✅\n"
         f"📊 <b>Mode:</b> {trade.get('mode', 'PRACTICE')}\n"
+        f"📌 <b>Entry Price:</b> {trade.get('entry_price', 'N/A')}\n"
         f"🕐 <b>Time:</b> {datetime.now().strftime('%H:%M:%S WAT')}"
     )
     await send_alert(msg)
@@ -107,6 +108,8 @@ async def send_trade_result(trade: dict):
         f"{emoji}\n"
         f"💱 <b>Pair:</b> {trade['pair']}\n"
         f"📊 <b>Direction:</b> {trade['direction']}\n"
+        f"📌 <b>Entry Price:</b> {trade.get('entry_price', 'N/A')}\n"
+        f"🏁 <b>Exit Price:</b> {trade.get('exit_price', 'N/A')}\n"
         f"💰 <b>P&L:</b> {pnl_str}\n"
         f"💳 <b>Balance:</b> ${trade.get('balance_after', 0):.2f}\n"
         f"🕐 <b>Time:</b> {datetime.now().strftime('%H:%M:%S WAT')}"

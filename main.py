@@ -348,17 +348,19 @@ def execute_trade(signal: dict) -> bool:
                 logger.error(f"❌ Trade failed: {error_msg}")
             return False
 
-        trade_id = trade_result["trade_id"]
+        trade_id    = trade_result["trade_id"]
+        entry_price = trade_result.get("entry_price", 0.0)
 
         # ── Send entry alert ──────────────────────
         asyncio.run(send_trade_entry({
-            "pair":       pair,
-            "direction":  direction,
-            "stake":      stake,
-            "expiry":     expiry,
-            "confidence": signal["confidence"],
-            "pattern":    signal.get("pattern", "None"),
-            "mode":       bot_state["mode"],
+            "pair":         pair,
+            "direction":    direction,
+            "stake":        stake,
+            "expiry":       expiry,
+            "confidence":   signal["confidence"],
+            "pattern":      signal.get("pattern", "None"),
+            "mode":         bot_state["mode"],
+            "entry_price":  entry_price,
         }))
 
         # ── Update bot state ──────────────────────
@@ -381,6 +383,7 @@ def execute_trade(signal: dict) -> bool:
             result = check_trade_result(trade_id)
             outcome = result["result"]
             profit = result["profit"]
+            exit_price = result.get("exit_price", 0.0)
             new_balance = get_balance()
 
             # Update risk state
@@ -420,6 +423,8 @@ def execute_trade(signal: dict) -> bool:
                 "result":        outcome,
                 "profit_loss":   profit,
                 "balance_after": new_balance,
+                "entry_price":   entry_price,
+                "exit_price":    exit_price,
             }))
 
             # Record live result for shadow
