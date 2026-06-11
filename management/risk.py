@@ -6,8 +6,8 @@
 #
 # NEW RULES:
 # - Max 10 trades per day (was 15, disabled)
-# - Daily profit target $30 → stop and LOCK gains
-# - Daily loss limit 5% → stop for the day
+# - Daily profit target 10% of balance → stop and LOCK gains
+# - Daily loss limit 5% of balance → stop for the day
 # - 3 consecutive losses → 30 min cooldown (was 1 hour)
 # - Per-pair cooldown: 120s between trades on same pair
 # - Max 2 trades open simultaneously
@@ -23,21 +23,21 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─────────────────────────────────────────────────
-# SETTINGS — Edit these in .env to tune live
+# SETTINGS — Edit these in Render Environment panel
 # ─────────────────────────────────────────────────
 
-MAX_DAILY_TRADES        = int(os.getenv("MAX_DAILY_TRADES", 10))
-DAILY_LOSS_LIMIT_PCT    = float(os.getenv("DAILY_LOSS_LIMIT", 5.0))
-DAILY_PROFIT_TARGET     = float(os.getenv("DAILY_PROFIT_TARGET", 30.0))
-MAX_CONSECUTIVE_LOSSES  = int(os.getenv("MAX_CONSECUTIVE_LOSSES", 3))
-CONSEC_LOSS_PAUSE_MINS  = 30         # minutes to pause after 3 consec losses
-WEEKLY_LOSS_LIMIT_PCT   = 10.0       # % of starting balance
-MAX_CONCURRENT_TRADES   = 2          # max trades open at same time
-PAIR_COOLDOWN_SECONDS   = 120        # seconds between trades on same pair
-STAKE_PCT               = float(os.getenv("STAKE_PERCENT", 1.5))   # % of balance
-MIN_STAKE               = 1.0        # minimum $1 per trade
-MAX_STAKE_PCT           = 2.0        # never risk more than 2% per trade
-PAYOUT_RATIO            = 0.87       # Deriv typical binary payout
+MAX_DAILY_TRADES            = int(os.getenv("MAX_DAILY_TRADES", 10))
+DAILY_LOSS_LIMIT_PCT        = float(os.getenv("DAILY_LOSS_LIMIT", 5.0))
+DAILY_PROFIT_TARGET_PCT     = float(os.getenv("DAILY_PROFIT_TARGET_PCT", 10.0))   # ✅ FIXED: reads correct env var
+MAX_CONSECUTIVE_LOSSES      = int(os.getenv("MAX_CONSECUTIVE_LOSSES", 3))
+CONSEC_LOSS_PAUSE_MINS      = 30         # minutes to pause after 3 consec losses
+WEEKLY_LOSS_LIMIT_PCT       = 10.0       # % of starting balance
+MAX_CONCURRENT_TRADES       = 2          # max trades open at same time
+PAIR_COOLDOWN_SECONDS       = 120        # seconds between trades on same pair
+STAKE_PCT                   = float(os.getenv("STAKE_PERCENT", 1.5))   # % of balance
+MIN_STAKE                   = 1.0        # minimum $1 per trade
+MAX_STAKE_PCT               = 2.0        # never risk more than 2% per trade
+PAYOUT_RATIO                = 0.87       # Deriv typical binary payout
 
 # ─────────────────────────────────────────────────
 # RISK STATE
@@ -47,7 +47,7 @@ risk_state = {
     "consecutive_losses":  0,
     "consecutive_wins":    0,
     "trades_today":        0,
-    "open_trades":         0,          # currently active trades
+    "open_trades":         0,
     "daily_pnl":           0.0,
     "weekly_pnl":          0.0,
     "starting_balance":    0.0,
@@ -57,38 +57,49 @@ risk_state = {
     "weekly_reset_date":   None,
     "is_shutdown":         False,
     "daily_target_hit":    False,
-    "pair_last_trade":     {},         # {pair: timestamp} cooldown tracker
+    "pair_last_trade":     {},
 }
 
 
 # ─────────────────────────────────────────────────
-# STAKE CALCULATOR — Simple flat % (no Kelly)
-# Kelly was overcomplicating things with a 35% win rate
+# HELPER — compute dollar targets from balance
+# ─────────────────────────────────────────────────
+
+def _daily_profit_target_usd() -> float:
+    """10% of starting balance in dollars. Falls back to $30 if balance not set yet."""
+    bal = risk_state["starting_balance"]
+    if bal > 0:
+        return round(bal * (DAILY_PROFIT_TARGET_PCT / 100), 2)
+    return 30.0   # safe fallback before balance is known
+
+
+def _daily_loss_limit_usd() -> float:
+    """5% of starting balance in dollars."""
+    bal = risk_state["starting_balance"]
+    if bal > 0:
+        return round(bal * (DAILY_LOSS_LIMIT_PCT / 100), 2)
+    return 0.0
+
+
+# ─────────────────────────────────────────────────
+# STAKE CALCULATOR
 # ─────────────────────────────────────────────────
 
 def calculate_stake(
     balance:    float,
-    confidence: float,   # 0-100
+    confidence: float,
     stake_size: str = "FULL",
-    win_rate:   float = 0.65,   # kept for API compatibility, unused
+    win_rate:   float = 0.65,
 ) -> float:
-    """
-    Flat percentage stake sizing.
-    FULL  = STAKE_PCT% of balance
-    HALF  = STAKE_PCT/2% of balance
-    SKIP  = $0
-    """
     try:
         if stake_size == "SKIP" or balance <= 0:
             return 0.0
 
         base_stake = balance * (STAKE_PCT / 100)
 
-        # Half stake for moderate signals
         if stake_size == "HALF":
             base_stake *= 0.5
 
-        # Never exceed max stake cap
         max_allowed = balance * (MAX_STAKE_PCT / 100)
         stake = min(base_stake, max_allowed)
         stake = max(stake, MIN_STAKE)
@@ -112,7 +123,6 @@ def check_and_reset_daily():
         risk_state["daily_pnl"]         = 0.0
         risk_state["daily_reset_date"]  = today
         risk_state["daily_target_hit"]  = False
-        # Clear per-pair cooldowns on new day
         risk_state["pair_last_trade"]   = {}
         logger.info("🔄 Daily risk counters reset")
 
@@ -135,14 +145,13 @@ def check_and_reset_weekly():
 # ─────────────────────────────────────────────────
 
 def can_trade(balance: float) -> dict:
-    """
-    Every check that must pass before placing a trade.
-    Returns {"allowed": bool, "reason": str}
-    """
     global risk_state
 
     check_and_reset_daily()
     check_and_reset_weekly()
+
+    profit_target_usd = _daily_profit_target_usd()
+    loss_limit_usd    = _daily_loss_limit_usd()
 
     # 1. Emergency shutdown
     if risk_state["is_shutdown"]:
@@ -161,29 +170,30 @@ def can_trade(balance: float) -> dict:
             risk_state["paused_reason"] = None
             logger.info("▶️ Cooldown lifted — resuming trading")
 
-    # 3. Daily profit target hit — LOCK the gains
+    # 3. Daily profit target — percentage-based ✅
     if risk_state["daily_target_hit"]:
         return {
             "allowed": False,
-            "reason":  f"🎯 Daily profit target ${DAILY_PROFIT_TARGET:.0f} hit — gains locked!"
+            "reason":  f"🎯 Daily profit target ${profit_target_usd:.2f} ({DAILY_PROFIT_TARGET_PCT:.0f}%) hit — gains locked!"
         }
 
-    if risk_state["daily_pnl"] >= DAILY_PROFIT_TARGET:
+    if risk_state["daily_pnl"] >= profit_target_usd:
         risk_state["daily_target_hit"] = True
-        logger.success(f"🎯 Daily profit target ${DAILY_PROFIT_TARGET:.0f} reached — stopping for today!")
+        logger.success(
+            f"🎯 Daily profit target ${profit_target_usd:.2f} "
+            f"({DAILY_PROFIT_TARGET_PCT:.0f}% of ${risk_state['starting_balance']:.2f}) reached — stopping for today!"
+        )
         return {
             "allowed": False,
             "reason":  f"🎯 Daily profit target hit — gains locked!"
         }
 
-    # 4. Daily loss limit
-    if risk_state["starting_balance"] > 0:
-        loss_pct = abs(risk_state["daily_pnl"] / risk_state["starting_balance"] * 100)
-        if risk_state["daily_pnl"] < 0 and loss_pct >= DAILY_LOSS_LIMIT_PCT:
-            return {
-                "allowed": False,
-                "reason":  f"💸 Daily loss limit hit ({DAILY_LOSS_LIMIT_PCT}%) — resuming tomorrow"
-            }
+    # 4. Daily loss limit — percentage-based ✅
+    if loss_limit_usd > 0 and risk_state["daily_pnl"] <= -loss_limit_usd:
+        return {
+            "allowed": False,
+            "reason":  f"💸 Daily loss limit ${loss_limit_usd:.2f} ({DAILY_LOSS_LIMIT_PCT:.0f}%) hit — resuming tomorrow"
+        }
 
     # 5. Weekly loss limit → shutdown
     if risk_state["starting_balance"] > 0:
@@ -214,10 +224,6 @@ def can_trade(balance: float) -> dict:
 
 
 def can_trade_pair(pair: str) -> dict:
-    """
-    Per-pair cooldown check.
-    Call this AFTER can_trade() passes.
-    """
     global risk_state
     last = risk_state["pair_last_trade"].get(pair, 0)
     elapsed = time.time() - last
@@ -235,14 +241,12 @@ def can_trade_pair(pair: str) -> dict:
 # ─────────────────────────────────────────────────
 
 def update_after_trade(result: str, pnl: float):
-    """Call this when a trade result is known (WIN or LOSS)"""
     global risk_state
 
     risk_state["trades_today"] += 1
     risk_state["daily_pnl"]   += pnl
     risk_state["weekly_pnl"]  += pnl
 
-    # Decrement open trade counter
     if risk_state["open_trades"] > 0:
         risk_state["open_trades"] -= 1
 
@@ -272,21 +276,26 @@ def update_after_trade(result: str, pnl: float):
 
 
 def register_trade_open(pair: str):
-    """Call this when a trade is placed (before result)"""
     global risk_state
     risk_state["open_trades"] += 1
     risk_state["pair_last_trade"][pair] = time.time()
 
 
 # ─────────────────────────────────────────────────
-# UTILITY FUNCTIONS (kept for compatibility)
+# UTILITY FUNCTIONS
 # ─────────────────────────────────────────────────
 
 def set_starting_balance(balance: float):
     global risk_state
     if risk_state["starting_balance"] == 0:
         risk_state["starting_balance"] = balance
-        logger.info(f"💰 Starting balance set: ${balance:.2f}")
+        profit_target = _daily_profit_target_usd()
+        loss_limit    = _daily_loss_limit_usd()
+        logger.info(
+            f"💰 Starting balance: ${balance:.2f} | "
+            f"Profit target: ${profit_target:.2f} ({DAILY_PROFIT_TARGET_PCT:.0f}%) | "
+            f"Loss limit: ${loss_limit:.2f} ({DAILY_LOSS_LIMIT_PCT:.0f}%)"
+        )
 
 
 def get_risk_state() -> dict:
@@ -313,10 +322,5 @@ def emergency_shutdown(reason: str):
     logger.critical(f"🚨 EMERGENCY SHUTDOWN: {reason}")
 
 
-# ─────────────────────────────────────────────────
-# KEPT FOR BACKWARD COMPATIBILITY WITH main.py
-# ─────────────────────────────────────────────────
-
 def calculate_kelly_stake(balance: float, win_rate: float = 0.65, payout: float = PAYOUT_RATIO) -> float:
-    """Alias — now just calls calculate_stake with FULL size"""
     return calculate_stake(balance, 80, "FULL", win_rate)
