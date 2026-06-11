@@ -87,7 +87,7 @@ async def send_trade_entry(trade: dict):
         f"⏱️ <b>Expiry:</b> {trade['expiry']} minutes\n"
         f"🎯 <b>Confidence:</b> {trade['confidence']}%\n"
         f"🕯️ <b>Pattern:</b> {trade.get('pattern', 'None')}\n"
-        f"🧠 <b>AI Approved:</b> ✅\n"
+        f"📊 <b>Score:</b> {trade.get('confidence', 0):.0f}% ({trade.get('pattern', 'MEAN_REVERSION')})\n"
         f"📊 <b>Mode:</b> {trade.get('mode', 'PRACTICE')}\n"
         f"📌 <b>Entry Price:</b> {trade.get('entry_price', 'N/A')}\n"
         f"🕐 <b>Time:</b> {datetime.now().strftime('%H:%M:%S WAT')}"
@@ -160,7 +160,7 @@ async def send_daily_report(stats: dict):
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     msg = (
-        f"⚡ <b>APEX ORACLE — AO-1.0</b>\n"
+        f"⚡ <b>APEX ORACLE — AO-2.0</b>\n"
         f"<i>We Don't Predict. We Know.</i>\n\n"
         f"<b>Available Commands:</b>\n"
         f"/status    — Bot health + activity\n"
