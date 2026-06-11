@@ -439,6 +439,10 @@ def execute_trade(signal: dict) -> bool:
             )
             bot_state["trade_active"] = False
 
+        except Exception as e:
+            logger.error(f"❌ Result thread error: {e}")
+            bot_state["trade_active"] = False
+
         threading.Thread(target=wait_for_result, daemon=True).start()
 
         return True
@@ -546,6 +550,15 @@ def trading_loop():
 
             # Skip if a trade is already running
             if bot_state.get("trade_active"):
+                # Safety timeout — force reset after 15 minutes
+                last_trade = bot_state.get("last_trade", {})
+                trade_time = last_trade.get("time", "")
+                if trade_time:
+                    from datetime import datetime
+                    elapsed = (datetime.now() - datetime.fromisoformat(trade_time)).seconds
+                    if elapsed > 900:  # 15 minutes
+                        logger.warning("⚠️ Trade active flag stuck for 15min — force resetting!")
+                        bot_state["trade_active"] = False
                 logger.info("⏸️ Trade already active — waiting for result...")
                 time.sleep(LOOP_INTERVAL)
                 continue
