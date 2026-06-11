@@ -376,72 +376,73 @@ def execute_trade(signal: dict) -> bool:
 
         # ── Spawn background thread to handle result ──
         def wait_for_result():
-            wait_seconds = (expiry * 60) + 5
-            logger.info(f"⏳ Waiting {wait_seconds}s for result in background...")
-            time.sleep(wait_seconds)
+            try:
+                wait_seconds = (expiry * 60) + 5
+                logger.info(f"⏳ Waiting {wait_seconds}s for result in background...")
+                time.sleep(wait_seconds)
 
-            result      = check_trade_result(trade_id)
-            outcome     = result["result"]
-            profit      = result["profit"]
-            exit_price  = result.get("exit_price", 0.0)
-            entry_price = result.get("entry_price", 0.0)
-            new_balance = get_balance()
+                result      = check_trade_result(trade_id)
+                outcome     = result["result"]
+                profit      = result["profit"]
+                exit_price  = result.get("exit_price", 0.0)
+                entry_price = result.get("entry_price", 0.0)
+                new_balance = get_balance()
 
-            # Update risk state
-            update_after_trade(outcome, profit)
+                # Update risk state
+                update_after_trade(outcome, profit)
 
-            # Update counters
-            if outcome == "WIN":
-                bot_state["wins_today"] += 1
-                update_status("wins_today", bot_state["wins_today"])
-            else:
-                bot_state["losses_today"] += 1
-                update_status("losses_today", bot_state["losses_today"])
+                # Update counters
+                if outcome == "WIN":
+                    bot_state["wins_today"] += 1
+                    update_status("wins_today", bot_state["wins_today"])
+                else:
+                    bot_state["losses_today"] += 1
+                    update_status("losses_today", bot_state["losses_today"])
 
-            bot_state["balance"] = new_balance
-            update_status("balance", new_balance)
+                bot_state["balance"] = new_balance
+                update_status("balance", new_balance)
 
-            # Log to database
-            log_trade({
-                "pair":            pair,
-                "direction":       direction,
-                "stake":           stake,
-                "expiry_seconds":  expiry * 60,
-                "confidence":      signal["confidence"],
-                "result":          outcome,
-                "profit_loss":     profit,
-                "balance_after":   new_balance,
-                "pattern":         signal.get("pattern", "None"),
-                "sentiment_score": signal.get("sentiment", 0),
-                "groq_reasoning":  signal.get("ai_reasoning", ""),
-                "mode":            bot_state["mode"],
-            })
+                # Log to database
+                log_trade({
+                    "pair":            pair,
+                    "direction":       direction,
+                    "stake":           stake,
+                    "expiry_seconds":  expiry * 60,
+                    "confidence":      signal["confidence"],
+                    "result":          outcome,
+                    "profit_loss":     profit,
+                    "balance_after":   new_balance,
+                    "pattern":         signal.get("pattern", "None"),
+                    "sentiment_score": signal.get("sentiment", 0),
+                    "groq_reasoning":  signal.get("ai_reasoning", ""),
+                    "mode":            bot_state["mode"],
+                })
 
-            # Send result alert
-            asyncio.run(send_trade_result({
-                "pair":          pair,
-                "direction":     direction,
-                "result":        outcome,
-                "profit_loss":   profit,
-                "balance_after": new_balance,
-                "entry_price":   entry_price,
-                "exit_price":    exit_price,
-            }))
+                # Send result alert
+                asyncio.run(send_trade_result({
+                    "pair":          pair,
+                    "direction":     direction,
+                    "result":        outcome,
+                    "profit_loss":   profit,
+                    "balance_after": new_balance,
+                    "entry_price":   entry_price,
+                    "exit_price":    exit_price,
+                }))
 
-            # Record live result for shadow
-            record_live_result(trade_id, outcome, profit)
+                # Record live result for shadow
+                record_live_result(trade_id, outcome, profit)
 
-            logger.info(
-                f"{'✅ WIN' if outcome == 'WIN' else '❌ LOSS'} | "
-                f"{pair} {direction} | "
-                f"P&L: ${profit:.2f} | "
-                f"Balance: ${new_balance:.2f}"
-            )
-            bot_state["trade_active"] = False
+                logger.info(
+                    f"{'✅ WIN' if outcome == 'WIN' else '❌ LOSS'} | "
+                    f"{pair} {direction} | "
+                    f"P&L: ${profit:.2f} | "
+                    f"Balance: ${new_balance:.2f}"
+                )
+                bot_state["trade_active"] = False
 
-        except Exception as e:
-            logger.error(f"❌ Result thread error: {e}")
-            bot_state["trade_active"] = False
+            except Exception as e:
+                logger.error(f"❌ Result thread error: {e}")
+                bot_state["trade_active"] = False
 
         threading.Thread(target=wait_for_result, daemon=True).start()
 
