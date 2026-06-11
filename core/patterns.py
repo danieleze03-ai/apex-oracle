@@ -485,9 +485,9 @@ def detect_patterns(df) -> dict:
         if is_evening_star(c2, c3, c4):
             found_patterns.append(("Evening Star",         "PUT",  10))
         if is_three_white_soldiers(c2, c3, c4):
-            found_patterns.append(("Three White Soldiers", "CALL", 10))
+            found_patterns.append(("Three White Soldiers", "CALL", 6))
         if is_three_black_crows(c2, c3, c4):
-            found_patterns.append(("Three Black Crows",    "PUT",  10))
+            found_patterns.append(("Three Black Crows",    "PUT",  6))
         if is_three_inside_up(c2, c3, c4):
             found_patterns.append(("Three Inside Up",      "CALL",  8))
         if is_three_inside_down(c2, c3, c4):
