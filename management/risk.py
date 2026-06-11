@@ -1,11 +1,21 @@
-# ⚡ APEX ORACLE — AO-1.0
-# Risk Management System
-# Kelly Criterion stake sizing + Hard stop rules
-# Protects capital at all times
+# ⚡ APEX ORACLE — AO-2.0
+# Risk Management System — REBUILT
+# Capital protection is JOB ONE.
 # "We Don't Predict. We Know."
+# ─────────────────────────────────────────────────
+#
+# NEW RULES:
+# - Max 10 trades per day (was 15, disabled)
+# - Daily profit target $30 → stop and LOCK gains
+# - Daily loss limit 5% → stop for the day
+# - 3 consecutive losses → 30 min cooldown (was 1 hour)
+# - Per-pair cooldown: 120s between trades on same pair
+# - Max 2 trades open simultaneously
+# - Stake: flat 1.5% of balance, never more
 # ─────────────────────────────────────────────────
 
 import os
+import time
 from datetime import datetime, timedelta
 from loguru import logger
 from dotenv import load_dotenv
@@ -13,27 +23,31 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─────────────────────────────────────────────────
-# RISK SETTINGS
+# SETTINGS — Edit these in .env to tune live
 # ─────────────────────────────────────────────────
 
-STAKE_PERCENT          = float(os.getenv("STAKE_PERCENT", 1.5))
-MAX_DAILY_TRADES       = int(os.getenv("MAX_DAILY_TRADES", 15))
-MAX_CONSECUTIVE_LOSSES = int(os.getenv("MAX_CONSECUTIVE_LOSSES", 3))
-DAILY_LOSS_LIMIT       = float(os.getenv("DAILY_LOSS_LIMIT", 5))
-WEEKLY_LOSS_LIMIT      = 10.0
-KELLY_SAFETY_FACTOR    = 0.25
-WIN_STREAK_REDUCE      = 5
-PAYOUT_PERCENT         = 0.87    # IQ Option typical payout
-
+MAX_DAILY_TRADES        = int(os.getenv("MAX_DAILY_TRADES", 10))
+DAILY_LOSS_LIMIT_PCT    = float(os.getenv("DAILY_LOSS_LIMIT", 5.0))
+DAILY_PROFIT_TARGET     = float(os.getenv("DAILY_PROFIT_TARGET", 30.0))
+MAX_CONSECUTIVE_LOSSES  = int(os.getenv("MAX_CONSECUTIVE_LOSSES", 3))
+CONSEC_LOSS_PAUSE_MINS  = 30         # minutes to pause after 3 consec losses
+WEEKLY_LOSS_LIMIT_PCT   = 10.0       # % of starting balance
+MAX_CONCURRENT_TRADES   = 2          # max trades open at same time
+PAIR_COOLDOWN_SECONDS   = 120        # seconds between trades on same pair
+STAKE_PCT               = float(os.getenv("STAKE_PERCENT", 1.5))   # % of balance
+MIN_STAKE               = 1.0        # minimum $1 per trade
+MAX_STAKE_PCT           = 2.0        # never risk more than 2% per trade
+PAYOUT_RATIO            = 0.87       # Deriv typical binary payout
 
 # ─────────────────────────────────────────────────
-# RISK STATE TRACKER
+# RISK STATE
 # ─────────────────────────────────────────────────
 
 risk_state = {
     "consecutive_losses":  0,
     "consecutive_wins":    0,
     "trades_today":        0,
+    "open_trades":         0,          # currently active trades
     "daily_pnl":           0.0,
     "weekly_pnl":          0.0,
     "starting_balance":    0.0,
@@ -42,99 +56,42 @@ risk_state = {
     "daily_reset_date":    None,
     "weekly_reset_date":   None,
     "is_shutdown":         False,
+    "daily_target_hit":    False,
+    "pair_last_trade":     {},         # {pair: timestamp} cooldown tracker
 }
 
 
 # ─────────────────────────────────────────────────
-# KELLY CRITERION STAKE CALCULATOR
+# STAKE CALCULATOR — Simple flat % (no Kelly)
+# Kelly was overcomplicating things with a 35% win rate
 # ─────────────────────────────────────────────────
 
-def calculate_kelly_stake(
-    balance:  float,
-    win_rate: float = 0.65,
-    payout:   float = PAYOUT_PERCENT,
-) -> float:
-    """
-    Calculate optimal stake using Kelly Criterion
-
-    Formula: Kelly = (Win% - Loss%) / Payout
-    We use 25% of Kelly for safety
-
-    Example at 65% win rate:
-    Full Kelly = 6.25% of balance
-    Our stake  = 1.56% of balance
-    """
-    try:
-        if balance <= 0:
-            return 0.0
-
-        win_rate  = min(max(win_rate, 0.1), 0.95)
-        loss_rate = 1 - win_rate
-
-        # Kelly formula
-        kelly = (win_rate - loss_rate) / payout
-
-        # Apply safety factor (25% of full Kelly)
-        safe_kelly = kelly * KELLY_SAFETY_FACTOR
-
-        # Calculate stake amount
-        stake = balance * safe_kelly
-
-        # Minimum $1, maximum 2% of balance
-        min_stake = max(1.0, balance * 0.005)
-        max_stake = balance * 0.02
-
-        stake = max(min_stake, min(stake, max_stake))
-
-        return round(stake, 2)
-
-    except Exception as e:
-        logger.error(f"❌ Kelly calculation error: {e}")
-        return round(balance * 0.01, 2)
-
-
 def calculate_stake(
-    balance:     float,
-    confidence:  float,
-    stake_size:  str = "FULL",
-    win_rate:    float = 0.65,
+    balance:    float,
+    confidence: float,   # 0-100
+    stake_size: str = "FULL",
+    win_rate:   float = 0.65,   # kept for API compatibility, unused
 ) -> float:
     """
-    Calculate final stake based on confidence and size
-
-    stake_size:
-    FULL = full Kelly stake
-    HALF = 50% of Kelly stake
-    SKIP = 0 (don't trade)
+    Flat percentage stake sizing.
+    FULL  = STAKE_PCT% of balance
+    HALF  = STAKE_PCT/2% of balance
+    SKIP  = $0
     """
     try:
         if stake_size == "SKIP" or balance <= 0:
             return 0.0
 
-        base_stake = calculate_kelly_stake(balance, win_rate)
+        base_stake = balance * (STAKE_PCT / 100)
 
-        # Adjust for confidence
-        if confidence >= 90:
-            multiplier = 1.0      # Full stake
-        elif confidence >= 80:
-            multiplier = 0.8      # 80% of stake
-        elif confidence >= 75:
-            multiplier = 0.6      # 60% of stake
-        else:
-            multiplier = 0.0      # Don't trade
-
-        # Apply stake size
+        # Half stake for moderate signals
         if stake_size == "HALF":
-            multiplier *= 0.5
+            base_stake *= 0.5
 
-        stake = base_stake * multiplier
-
-        # Never risk more than 2% per trade
-        max_allowed = balance * 0.02
-        stake = min(stake, max_allowed)
-
-        # Minimum $1
-        stake = max(stake, 1.0) if stake > 0 else 0.0
+        # Never exceed max stake cap
+        max_allowed = balance * (MAX_STAKE_PCT / 100)
+        stake = min(base_stake, max_allowed)
+        stake = max(stake, MIN_STAKE)
 
         return round(stake, 2)
 
@@ -144,27 +101,26 @@ def calculate_stake(
 
 
 # ─────────────────────────────────────────────────
-# DAILY / WEEKLY RESET
+# DAILY / WEEKLY RESETS
 # ─────────────────────────────────────────────────
 
 def check_and_reset_daily():
-    """Reset daily counters at midnight"""
     global risk_state
     today = datetime.now().date()
-
     if risk_state["daily_reset_date"] != today:
-        risk_state["trades_today"]     = 0
-        risk_state["daily_pnl"]        = 0.0
-        risk_state["daily_reset_date"] = today
+        risk_state["trades_today"]      = 0
+        risk_state["daily_pnl"]         = 0.0
+        risk_state["daily_reset_date"]  = today
+        risk_state["daily_target_hit"]  = False
+        # Clear per-pair cooldowns on new day
+        risk_state["pair_last_trade"]   = {}
         logger.info("🔄 Daily risk counters reset")
 
 
 def check_and_reset_weekly():
-    """Reset weekly counters on Monday"""
     global risk_state
-    today     = datetime.now().date()
-    monday    = today - timedelta(days=today.weekday())
-
+    today  = datetime.now().date()
+    monday = today - timedelta(days=today.weekday())
     if risk_state["weekly_reset_date"] != monday:
         risk_state["weekly_pnl"]        = 0.0
         risk_state["weekly_reset_date"] = monday
@@ -175,148 +131,158 @@ def check_and_reset_weekly():
 
 
 # ─────────────────────────────────────────────────
-# HARD STOP RULES
+# CAN TRADE — Master gate
 # ─────────────────────────────────────────────────
 
 def can_trade(balance: float) -> dict:
     """
-    Master check — can we trade right now?
-
-    Checks all hard stop rules:
-    1. Emergency shutdown
-    2. Paused (after consecutive losses)
-    3. Daily trade limit
-    4. Daily loss limit
-    5. Weekly loss limit
-    6. Minimum balance
-
-    Returns:
-    {
-        "allowed":  True/False,
-        "reason":   "explanation"
-    }
+    Every check that must pass before placing a trade.
+    Returns {"allowed": bool, "reason": str}
     """
     global risk_state
 
     check_and_reset_daily()
     check_and_reset_weekly()
 
-    # ── Check 1: Emergency shutdown ───────────────
+    # 1. Emergency shutdown
     if risk_state["is_shutdown"]:
-        return {
-            "allowed": False,
-            "reason":  "🚨 Weekly loss limit hit — shutdown until Monday"
-        }
+        return {"allowed": False, "reason": "🚨 Weekly loss limit hit — shutdown until Monday"}
 
-    # ── Check 2: Paused ───────────────────────────
+    # 2. Paused (consecutive losses)
     if risk_state["paused_until"]:
         if datetime.now() < risk_state["paused_until"]:
-            remaining = (
-                risk_state["paused_until"] - datetime.now()
-            ).seconds // 60
+            mins = int((risk_state["paused_until"] - datetime.now()).seconds / 60)
             return {
                 "allowed": False,
-                "reason":  f"⏸️ Paused for {remaining} more minutes — {risk_state['paused_reason']}"
+                "reason":  f"⏸️ Cooling down — {mins} min left ({risk_state['paused_reason']})"
             }
         else:
-            risk_state["paused_until"] = None
+            risk_state["paused_until"]  = None
             risk_state["paused_reason"] = None
-            logger.info("▶️ Pause lifted — resuming trading")
+            logger.info("▶️ Cooldown lifted — resuming trading")
 
-    # ── Check 3: Daily trade limit ────────────────
-    # DISABLED — Synthetics run 24/7, no daily cap needed
-    # MAX_DAILY_TRADES kept for reporting/stats only
-    if risk_state["trades_today"] >= MAX_DAILY_TRADES:
-        logger.debug(
-            f"📊 Info: {risk_state['trades_today']} trades today "
-            f"(limit disabled for 24/7 Synthetics)"
-        )
-
-    # ── Check 4: Daily loss limit ─────────────────
-    if risk_state["starting_balance"] > 0:
-        daily_loss_pct = abs(
-            risk_state["daily_pnl"] / risk_state["starting_balance"] * 100
-        )
-        if risk_state["daily_pnl"] < 0 and daily_loss_pct >= DAILY_LOSS_LIMIT:
-            return {
-                "allowed": False,
-                "reason":  f"💸 Daily loss limit hit ({DAILY_LOSS_LIMIT}%) — resuming tomorrow"
-            }
-
-    # ── Check 5: Weekly loss limit ────────────────
-    if risk_state["starting_balance"] > 0:
-        weekly_loss_pct = abs(
-            risk_state["weekly_pnl"] / risk_state["starting_balance"] * 100
-        )
-        if risk_state["weekly_pnl"] < 0 and weekly_loss_pct >= WEEKLY_LOSS_LIMIT:
-            risk_state["is_shutdown"] = True
-            return {
-                "allowed": False,
-                "reason":  "🚨 Weekly loss limit hit — shutdown until Monday"
-            }
-
-    # ── Check 6: Minimum balance ──────────────────
-    if balance < 1.0:
+    # 3. Daily profit target hit — LOCK the gains
+    if risk_state["daily_target_hit"]:
         return {
             "allowed": False,
-            "reason":  "💰 Balance too low to trade"
+            "reason":  f"🎯 Daily profit target ${DAILY_PROFIT_TARGET:.0f} hit — gains locked!"
         }
+
+    if risk_state["daily_pnl"] >= DAILY_PROFIT_TARGET:
+        risk_state["daily_target_hit"] = True
+        logger.success(f"🎯 Daily profit target ${DAILY_PROFIT_TARGET:.0f} reached — stopping for today!")
+        return {
+            "allowed": False,
+            "reason":  f"🎯 Daily profit target hit — gains locked!"
+        }
+
+    # 4. Daily loss limit
+    if risk_state["starting_balance"] > 0:
+        loss_pct = abs(risk_state["daily_pnl"] / risk_state["starting_balance"] * 100)
+        if risk_state["daily_pnl"] < 0 and loss_pct >= DAILY_LOSS_LIMIT_PCT:
+            return {
+                "allowed": False,
+                "reason":  f"💸 Daily loss limit hit ({DAILY_LOSS_LIMIT_PCT}%) — resuming tomorrow"
+            }
+
+    # 5. Weekly loss limit → shutdown
+    if risk_state["starting_balance"] > 0:
+        weekly_loss_pct = abs(risk_state["weekly_pnl"] / risk_state["starting_balance"] * 100)
+        if risk_state["weekly_pnl"] < 0 and weekly_loss_pct >= WEEKLY_LOSS_LIMIT_PCT:
+            risk_state["is_shutdown"] = True
+            return {"allowed": False, "reason": "🚨 Weekly loss limit hit — shutdown until Monday"}
+
+    # 6. Daily trade cap
+    if risk_state["trades_today"] >= MAX_DAILY_TRADES:
+        return {
+            "allowed": False,
+            "reason":  f"📊 Daily trade cap ({MAX_DAILY_TRADES}) reached — done for today"
+        }
+
+    # 7. Too many concurrent open trades
+    if risk_state["open_trades"] >= MAX_CONCURRENT_TRADES:
+        return {
+            "allowed": False,
+            "reason":  f"⏳ {risk_state['open_trades']} trades already open — waiting"
+        }
+
+    # 8. Minimum balance
+    if balance < MIN_STAKE:
+        return {"allowed": False, "reason": "💰 Balance too low to trade"}
 
     return {"allowed": True, "reason": "✅ All checks passed"}
 
 
-def update_after_trade(result: str, pnl: float):
+def can_trade_pair(pair: str) -> dict:
     """
-    Update risk state after every trade result
+    Per-pair cooldown check.
+    Call this AFTER can_trade() passes.
+    """
+    global risk_state
+    last = risk_state["pair_last_trade"].get(pair, 0)
+    elapsed = time.time() - last
+    if elapsed < PAIR_COOLDOWN_SECONDS:
+        remaining = int(PAIR_COOLDOWN_SECONDS - elapsed)
+        return {
+            "allowed": False,
+            "reason":  f"⏱️ {pair} cooldown — {remaining}s remaining"
+        }
+    return {"allowed": True, "reason": "ok"}
 
-    result = "WIN" or "LOSS"
-    pnl    = profit or loss amount
-    """
+
+# ─────────────────────────────────────────────────
+# UPDATE AFTER TRADE
+# ─────────────────────────────────────────────────
+
+def update_after_trade(result: str, pnl: float):
+    """Call this when a trade result is known (WIN or LOSS)"""
     global risk_state
 
     risk_state["trades_today"] += 1
     risk_state["daily_pnl"]   += pnl
     risk_state["weekly_pnl"]  += pnl
 
+    # Decrement open trade counter
+    if risk_state["open_trades"] > 0:
+        risk_state["open_trades"] -= 1
+
     if result == "WIN":
         risk_state["consecutive_losses"] = 0
         risk_state["consecutive_wins"]  += 1
-
-        # Win streak protection
-        if risk_state["consecutive_wins"] >= WIN_STREAK_REDUCE:
-            logger.info(
-                f"🏆 {WIN_STREAK_REDUCE} consecutive wins! "
-                f"Reducing stake size by 20% to protect profits"
-            )
 
     elif result == "LOSS":
         risk_state["consecutive_wins"]   = 0
         risk_state["consecutive_losses"] += 1
 
-        # Consecutive loss pause
         if risk_state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
-            pause_until = datetime.now() + timedelta(hours=1)
-            risk_state["paused_until"]  = pause_until
-            risk_state["paused_reason"] = (
-                f"{MAX_CONSECUTIVE_LOSSES} consecutive losses"
-            )
+            pause_until = datetime.now() + timedelta(minutes=CONSEC_LOSS_PAUSE_MINS)
+            risk_state["paused_until"]       = pause_until
+            risk_state["paused_reason"]      = f"{MAX_CONSECUTIVE_LOSSES} consecutive losses"
             risk_state["consecutive_losses"] = 0
             logger.warning(
-                f"⏸️ {MAX_CONSECUTIVE_LOSSES} consecutive losses! "
-                f"Pausing for 1 hour..."
+                f"⏸️ {MAX_CONSECUTIVE_LOSSES} consecutive losses — "
+                f"pausing {CONSEC_LOSS_PAUSE_MINS} minutes"
             )
 
     logger.info(
-        f"📊 Risk State: "
-        f"Trades={risk_state['trades_today']} | "
-        f"Daily PnL=${risk_state['daily_pnl']:.2f} | "
-        f"Streak: {risk_state['consecutive_wins']}W "
-        f"{risk_state['consecutive_losses']}L"
+        f"📊 Risk | Trades={risk_state['trades_today']}/{MAX_DAILY_TRADES} | "
+        f"Daily P&L=${risk_state['daily_pnl']:.2f} | "
+        f"Streak: {risk_state['consecutive_wins']}W {risk_state['consecutive_losses']}L"
     )
 
 
+def register_trade_open(pair: str):
+    """Call this when a trade is placed (before result)"""
+    global risk_state
+    risk_state["open_trades"] += 1
+    risk_state["pair_last_trade"][pair] = time.time()
+
+
+# ─────────────────────────────────────────────────
+# UTILITY FUNCTIONS (kept for compatibility)
+# ─────────────────────────────────────────────────
+
 def set_starting_balance(balance: float):
-    """Set starting balance for loss calculations"""
     global risk_state
     if risk_state["starting_balance"] == 0:
         risk_state["starting_balance"] = balance
@@ -324,64 +290,33 @@ def set_starting_balance(balance: float):
 
 
 def get_risk_state() -> dict:
-    """Get current risk state for reporting"""
     return risk_state.copy()
 
 
 def pause_trading(reason: str, minutes: int = 60):
-    """Manually pause trading"""
     global risk_state
     risk_state["paused_until"]  = datetime.now() + timedelta(minutes=minutes)
     risk_state["paused_reason"] = reason
-    logger.warning(f"⏸️ Trading paused for {minutes} mins: {reason}")
+    logger.warning(f"⏸️ Trading paused {minutes}min: {reason}")
 
 
 def resume_trading():
-    """Manually resume trading"""
     global risk_state
     risk_state["paused_until"]  = None
     risk_state["paused_reason"] = None
-    logger.info("▶️ Trading resumed manually")
+    logger.info("▶️ Trading resumed")
 
 
 def emergency_shutdown(reason: str):
-    """Emergency shutdown"""
     global risk_state
     risk_state["is_shutdown"] = True
     logger.critical(f"🚨 EMERGENCY SHUTDOWN: {reason}")
 
 
 # ─────────────────────────────────────────────────
-# STANDALONE TEST
+# KEPT FOR BACKWARD COMPATIBILITY WITH main.py
 # ─────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    print("\n⚡ APEX ORACLE — Risk Management Test")
-    print("─" * 45)
-
-    balance = 10000.00
-    set_starting_balance(balance)
-
-    print(f"\n💰 Balance: ${balance}")
-    print(f"\n--- Kelly Stake Calculation ---")
-    stake = calculate_kelly_stake(balance, win_rate=0.65)
-    print(f"Kelly Stake (65% win rate): ${stake}")
-
-    stake_full = calculate_stake(balance, 88, "FULL", 0.65)
-    stake_half = calculate_stake(balance, 76, "HALF", 0.65)
-    print(f"Full stake (88% conf): ${stake_full}")
-    print(f"Half stake (76% conf): ${stake_half}")
-
-    print(f"\n--- Can Trade Check ---")
-    check = can_trade(balance)
-    print(f"Allowed: {check['allowed']}")
-    print(f"Reason:  {check['reason']}")
-
-    print(f"\n--- Simulating 3 losses ---")
-    for i in range(3):
-        update_after_trade("LOSS", -stake_full)
-        print(f"Loss {i+1}: Daily PnL = ${risk_state['daily_pnl']:.2f}")
-
-    check = can_trade(balance)
-    print(f"\nCan trade after 3 losses: {check['allowed']}")
-    print(f"Reason: {check['reason']}")
+def calculate_kelly_stake(balance: float, win_rate: float = 0.65, payout: float = PAYOUT_RATIO) -> float:
+    """Alias — now just calls calculate_stake with FULL size"""
+    return calculate_stake(balance, 80, "FULL", win_rate)

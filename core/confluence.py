@@ -1,109 +1,247 @@
-# ⚡ APEX ORACLE — AO-1.0
-# Confluence Engine — Combines all signals
+# ⚡ APEX ORACLE — AO-2.0
+# Confluence Engine — REBUILT
+# Strategy: Mean Reversion Scoring for Synthetic Indices
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
+#
+# KEY INSIGHT: Deriv synthetic indices OSCILLATE. They do NOT trend.
+# This engine bets on price snapping BACK from extremes.
+# A trade only fires when score >= MIN_SCORE (7 out of 12 max).
+# Fewer trades. Better trades. Higher win rate.
+# ─────────────────────────────────────────────────
 
+import numpy as np
+import pandas as pd
 from loguru import logger
-from core.signals   import generate_signal, prepare_dataframe
-from core.patterns  import detect_patterns
-from core.volatility import check_volatility
 
 # ─────────────────────────────────────────────────
-# WEIGHTS — How much each factor contributes
+# SCORING THRESHOLDS
 # ─────────────────────────────────────────────────
 
-WEIGHTS = {
-    "indicators": 40,
-    "patterns":   25,
-    "volatility": 15,
-    "timeframe":  20,
-}
+MIN_SCORE           = 7      # Minimum points to fire a trade (out of 12)
+RSI_EXTREME_HIGH    = 75     # RSI above this → strong FALL signal
+RSI_STRONG_HIGH     = 70     # RSI above this → moderate FALL signal
+RSI_EXTREME_LOW     = 25     # RSI below this → strong RISE signal
+RSI_STRONG_LOW      = 30     # RSI below this → moderate RISE signal
+BB_TOUCH_THRESHOLD  = 0.98   # Price within 2% of BB band = touching it
+ROC_PERIOD          = 5      # Rate of Change lookback period
+ROC_FADE_THRESHOLD  = 0.0    # ROC crossing zero = momentum fading
+COOLDOWN_PER_PAIR   = 120    # Seconds between trades on same pair
 
 
 # ─────────────────────────────────────────────────
-# SCORING HELPERS
+# INDICATOR CALCULATORS
 # ─────────────────────────────────────────────────
 
-def score_indicators(signal: dict, direction: str) -> dict:
-    indicators = signal.get("indicators", {})
-    agreements = 0
-    total      = 0
+def _calc_rsi(closes: np.ndarray, period: int = 14) -> float:
+    """Calculate RSI from close prices array"""
+    if len(closes) < period + 1:
+        return 50.0
+    deltas = np.diff(closes)
+    gains  = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    avg_gain = np.mean(gains[-period:])
+    avg_loss = np.mean(losses[-period:])
+    if avg_loss == 0:
+        return 100.0
+    rs  = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return round(float(rsi), 2)
 
-    for name, data in indicators.items():
-        sig = data.get("signal", "NEUTRAL")
-        if sig not in ("NEUTRAL", "SQUEEZE"):
-            total += 1
-            if sig == direction:
-                agreements += 1
 
-    score = (agreements / total * 100) if total > 0 else 0
+def _calc_bb(closes: np.ndarray, period: int = 20, std_dev: float = 2.0) -> dict:
+    """Calculate Bollinger Bands"""
+    if len(closes) < period:
+        return {"upper": 0, "middle": 0, "lower": 0}
+    window = closes[-period:]
+    middle = float(np.mean(window))
+    std    = float(np.std(window))
     return {
-        "score":      round(score, 1),
-        "agreements": agreements,
-        "total":      total,
-        "details":    indicators,
+        "upper":  round(middle + std_dev * std, 6),
+        "middle": round(middle, 6),
+        "lower":  round(middle - std_dev * std, 6),
     }
 
 
-def score_pattern(pat_data: dict, direction: str) -> dict:
-    pattern   = pat_data.get("pattern", "None")
-    pat_dir   = pat_data.get("direction", "NEUTRAL")
-    strength  = pat_data.get("strength", 0)
-
-    if pattern == "None" or pat_dir == "NEUTRAL":
-        return {"score": 50, "pattern": pattern, "strength": 0}
-
-    if pat_dir == direction:
-        score = 50 + (strength * 5)
-    else:
-        score = 50 - (strength * 5)
-
-    return {
-        "score":    min(100, max(0, score)),
-        "pattern":  pattern,
-        "strength": strength,
-    }
+def _calc_roc(closes: np.ndarray, period: int = 5) -> float:
+    """Rate of Change — detects momentum fading"""
+    if len(closes) < period + 1:
+        return 0.0
+    prev  = closes[-(period + 1)]
+    curr  = closes[-1]
+    if prev == 0:
+        return 0.0
+    return round(float((curr - prev) / prev), 6)
 
 
-def score_volatility(vol_data: dict) -> dict:
-    level = vol_data.get("level", "MEDIUM")
-    scores = {
-        "LOW":     30,
-        "MEDIUM":  80,
-        "HIGH":    40,
-        "EXTREME": 0,
-    }
-    return {
-        "score": scores.get(level, 50),
-        "level": level,
-    }
+def _detect_direction_flip(closes: np.ndarray, lookback: int = 3) -> str:
+    """
+    Detect if price just reversed direction.
+    Returns "UP_FLIP", "DOWN_FLIP", or "NONE"
+    """
+    if len(closes) < lookback + 1:
+        return "NONE"
+    recent = closes[-(lookback + 1):]
+    # Was going down, now turning up
+    was_falling = recent[-2] < recent[-3] if len(recent) >= 3 else False
+    now_rising  = recent[-1] > recent[-2]
+    if was_falling and now_rising:
+        return "UP_FLIP"
+    # Was going up, now turning down
+    was_rising  = recent[-2] > recent[-3] if len(recent) >= 3 else False
+    now_falling = recent[-1] < recent[-2]
+    if was_rising and now_falling:
+        return "DOWN_FLIP"
+    return "NONE"
 
 
-def score_timeframes(candles_by_tf: dict, direction: str) -> dict:
-    agreements = 0
-    total      = 0
-
-    for tf, candles in candles_by_tf.items():
-        if tf == "5":
-            continue
-        if not candles or len(candles) < 20:
-            continue
-        sig = generate_signal(candles, "")
-        if sig["direction"] != "SKIP":
-            total += 1
-            if sig["direction"] == direction:
-                agreements += 1
-
-    score = (agreements / total * 100) if total > 0 else 50
-    return {
-        "score":      round(score, 1),
-        "agreements": agreements,
-        "total":      total,
-    }
+def _is_local_extreme(closes: np.ndarray, lookback: int = 10) -> str:
+    """
+    Check if current price is near a local high or low.
+    Returns "HIGH", "LOW", or "NONE"
+    """
+    if len(closes) < lookback:
+        return "NONE"
+    window  = closes[-lookback:]
+    current = closes[-1]
+    high    = np.max(window)
+    low     = np.min(window)
+    spread  = high - low
+    if spread == 0:
+        return "NONE"
+    # Within top 15% of the range = near high
+    if current >= high - (spread * 0.15):
+        return "HIGH"
+    # Within bottom 15% of the range = near low
+    if current <= low + (spread * 0.15):
+        return "LOW"
+    return "NONE"
 
 
 # ─────────────────────────────────────────────────
-# MASTER CONFLUENCE CALCULATOR
+# CORE SCORING ENGINE
+# ─────────────────────────────────────────────────
+
+def _score_direction(
+    direction: str,    # "CALL" or "PUT"
+    rsi:       float,
+    bb:        dict,
+    price:     float,
+    roc:       float,
+    flip:      str,
+    extreme:   str,
+) -> int:
+    """
+    Score a given direction (CALL=RISE or PUT=FALL).
+    Maximum possible score = 12.
+    Minimum to trade = 7.
+
+    Scoring rules (mean reversion on synthetics):
+    ─────────────────────────────────────────────
+    RSI extreme:         +3 pts   (strongest signal)
+    RSI strong:          +2 pts
+    BB band touch:       +3 pts   (second strongest)
+    BB band near:        +1 pt
+    Momentum fading ROC: +2 pts
+    Direction flip:      +2 pts   (confirmation)
+    Local price extreme: +1 pt    (bonus)
+    ─────────────────────────────────────────────
+    """
+    score = 0
+    breakdown = {}
+
+    if direction == "CALL":
+        # ── RSI oversold ───────────────────────────
+        if rsi <= RSI_EXTREME_LOW:
+            score += 3
+            breakdown["rsi"] = f"+3 (RSI={rsi} extreme oversold)"
+        elif rsi <= RSI_STRONG_LOW:
+            score += 2
+            breakdown["rsi"] = f"+2 (RSI={rsi} oversold)"
+        else:
+            breakdown["rsi"] = f"0 (RSI={rsi} not oversold)"
+
+        # ── BB lower band touch ────────────────────
+        if bb["lower"] > 0:
+            if price <= bb["lower"] * (2 - BB_TOUCH_THRESHOLD):
+                score += 3
+                breakdown["bb"] = "+3 (price at lower BB)"
+            elif price <= bb["middle"]:
+                score += 1
+                breakdown["bb"] = "+1 (price below BB midline)"
+            else:
+                breakdown["bb"] = "0 (price above BB midline)"
+
+        # ── Momentum ROC building upward ───────────
+        if roc > ROC_FADE_THRESHOLD:
+            score += 2
+            breakdown["roc"] = f"+2 (ROC={roc:.4f} building upward)"
+        else:
+            breakdown["roc"] = f"0 (ROC={roc:.4f} not building)"
+
+        # ── Direction flip to up ───────────────────
+        if flip == "UP_FLIP":
+            score += 2
+            breakdown["flip"] = "+2 (price just reversed UP)"
+        else:
+            breakdown["flip"] = f"0 (no up flip, flip={flip})"
+
+        # ── Local low extreme ──────────────────────
+        if extreme == "LOW":
+            score += 1
+            breakdown["extreme"] = "+1 (at local price low)"
+        else:
+            breakdown["extreme"] = "0"
+
+    elif direction == "PUT":
+        # ── RSI overbought ─────────────────────────
+        if rsi >= RSI_EXTREME_HIGH:
+            score += 3
+            breakdown["rsi"] = f"+3 (RSI={rsi} extreme overbought)"
+        elif rsi >= RSI_STRONG_HIGH:
+            score += 2
+            breakdown["rsi"] = f"+2 (RSI={rsi} overbought)"
+        else:
+            breakdown["rsi"] = f"0 (RSI={rsi} not overbought)"
+
+        # ── BB upper band touch ────────────────────
+        if bb["upper"] > 0:
+            if price >= bb["upper"] * BB_TOUCH_THRESHOLD:
+                score += 3
+                breakdown["bb"] = "+3 (price at upper BB)"
+            elif price >= bb["middle"]:
+                score += 1
+                breakdown["bb"] = "+1 (price above BB midline)"
+            else:
+                breakdown["bb"] = "0 (price below BB midline)"
+
+        # ── Momentum ROC fading downward ───────────
+        if roc < ROC_FADE_THRESHOLD:
+            score += 2
+            breakdown["roc"] = f"+2 (ROC={roc:.4f} fading downward)"
+        else:
+            breakdown["roc"] = f"0 (ROC={roc:.4f} not fading)"
+
+        # ── Direction flip to down ─────────────────
+        if flip == "DOWN_FLIP":
+            score += 2
+            breakdown["flip"] = "+2 (price just reversed DOWN)"
+        else:
+            breakdown["flip"] = f"0 (no down flip, flip={flip})"
+
+        # ── Local high extreme ─────────────────────
+        if extreme == "HIGH":
+            score += 1
+            breakdown["extreme"] = "+1 (at local price high)"
+        else:
+            breakdown["extreme"] = "0"
+
+    return score, breakdown
+
+
+# ─────────────────────────────────────────────────
+# MAIN CONFLUENCE CALCULATOR
+# Called by main.py — replaces old calculate_confluence()
 # ─────────────────────────────────────────────────
 
 def calculate_confluence(
@@ -111,126 +249,149 @@ def calculate_confluence(
     candles_by_tf:   dict,
     pair:            str = "",
 ) -> dict:
+    """
+    New Mean Reversion Confluence Engine for Deriv Synthetics.
+
+    Returns dict with:
+      direction:  "CALL", "PUT", or "SKIP"
+      confidence: score out of 12 (renamed for compatibility)
+      action:     "TRADE" or "SKIP"
+      stake_size: "FULL", "HALF", or "SKIP"
+      reason:     explanation string
+    """
     try:
-        if not candles_primary or len(candles_primary) < 50:
-            return {
-                "direction":  "SKIP",
-                "confidence": 0,
-                "action":     "SKIP",
-                "stake_size": "SKIP",
-                "reason":     "Not enough candle data",
-            }
+        # ── Minimum data guard ─────────────────────
+        if not candles_primary or len(candles_primary) < 30:
+            return _skip("Not enough candle data (need 30+)")
 
-        primary_signal = generate_signal(candles_primary, pair)
-        direction      = primary_signal["direction"]
+        # ── Extract close prices ───────────────────
+        closes = np.array([
+            float(c.get("close", c.get("Close", 0)))
+            for c in candles_primary
+            if c.get("close", c.get("Close", 0)) != 0
+        ])
 
-        if direction == "SKIP":
-            return {
-                "direction":  "SKIP",
-                "confidence": 0,
-                "action":     "SKIP",
-                "stake_size": "SKIP",
-                "reason":     primary_signal.get("reason", "No signal"),
-            }
+        if len(closes) < 25:
+            return _skip("Not enough valid close prices")
 
-        df         = prepare_dataframe(candles_primary)
-        ind_score  = score_indicators(primary_signal, direction)
-        pat_data   = detect_patterns(df)
-        pat_score  = score_pattern(pat_data, direction)
-        vol_data   = check_volatility(df, pair)
-        vol_score  = score_volatility(vol_data)
-        tf_score   = score_timeframes(candles_by_tf, direction)
+        price = float(closes[-1])
 
-        final_score = (
-            (ind_score["score"] * WEIGHTS["indicators"] / 100) +
-            (pat_score["score"] * WEIGHTS["patterns"]   / 100) +
-            (vol_score["score"] * WEIGHTS["volatility"] / 100) +
-            (tf_score["score"]  * WEIGHTS["timeframe"]  / 100)
+        # ── Calculate indicators ───────────────────
+        rsi     = _calc_rsi(closes, period=14)
+        bb      = _calc_bb(closes, period=20, std_dev=2.0)
+        roc     = _calc_roc(closes, period=ROC_PERIOD)
+        flip    = _detect_direction_flip(closes, lookback=3)
+        extreme = _is_local_extreme(closes, lookback=15)
+
+        # ── Score both directions independently ────
+        call_score, call_breakdown = _score_direction(
+            "CALL", rsi, bb, price, roc, flip, extreme
         )
-        final_score = round(final_score, 1)
+        put_score, put_breakdown = _score_direction(
+            "PUT", rsi, bb, price, roc, flip, extreme
+        )
 
-        # ── Conflict check — pattern vs indicators ──
-        pat_dir = pat_data.get("direction", "NEUTRAL")
-        pat_strength = pat_data.get("strength", 0)
-        if (
-            pat_dir != "NEUTRAL"
-            and pat_dir != direction
-            and pat_strength >= 7
-        ):
-            logger.warning(
-                f"⚠️ Conflict detected! Indicators say {direction} "
-                f"but pattern ({pat_data['pattern']}) says {pat_dir} "
-                f"(strength {pat_strength}/10) — SKIPPING"
-            )
-            return {
-                "direction":  "SKIP",
-                "confidence": final_score,
-                "action":     "SKIP",
-                "stake_size": "SKIP",
-                "reason":     f"⚠️ Pattern conflicts with indicators — skipping",
-                "pattern":    pat_data["pattern"],
-                "breakdown": {
-                    "indicators": ind_score,
-                    "pattern":    pat_score,
-                    "volatility": vol_score,
-                    "timeframes": tf_score,
-                },
-            }
-
-        # ── Minimum 4/5 indicators must agree ────────
-        if ind_score["agreements"] >= 4 and final_score >= 80:
-            if final_score >= 90:
-                action     = "TRADE"
-                stake_size = "FULL"
-                reason     = f"🔥 Exceptional {direction} confluence!"
-            else:
-                action     = "TRADE"
-                stake_size = "FULL"
-                reason     = f"✅ Strong {direction} confluence"
-        elif ind_score["agreements"] >= 3 and final_score >= 80:
-            action     = "TRADE"
-            stake_size = "HALF"
-            reason     = f"⚡ Moderate {direction} — half stake"
+        # ── Pick winner ────────────────────────────
+        if call_score > put_score:
+            direction = "CALL"
+            score     = call_score
+            breakdown = call_breakdown
+        elif put_score > call_score:
+            direction = "PUT"
+            score     = put_score
+            breakdown = put_breakdown
         else:
-            action     = "SKIP"
-            stake_size = "SKIP"
-            reason     = f"❌ Weak confluence ({final_score}%) — skipping"
+            # Tied = no clear signal
+            logger.debug(f"⏭️ {pair} — tied score CALL={call_score} PUT={put_score}")
+            return _skip("No clear directional edge (tied scores)")
 
-        if tf_score["total"] > 0 and tf_score["agreements"] == 0 and action == "TRADE":
-            action     = "SKIP"
-            stake_size = "SKIP"
-            reason     = "No timeframes agree — skipping"
+        # ── Score must beat opposing by at least 2 pts
+        opposing = put_score if direction == "CALL" else call_score
+        if (score - opposing) < 2:
+            return _skip(
+                f"Score margin too small ({direction}={score} vs opp={opposing}) — no edge"
+            )
 
-        result = {
+        # ── Minimum score gate ─────────────────────
+        if score < MIN_SCORE:
+            return _skip(
+                f"Score {score}/12 below minimum {MIN_SCORE} — skipping"
+            )
+
+        # ── Determine stake size ───────────────────
+        if score >= 10:
+            stake_size = "FULL"
+            label      = "🔥 EXCEPTIONAL"
+        elif score >= 8:
+            stake_size = "FULL"
+            label      = "✅ STRONG"
+        elif score >= MIN_SCORE:
+            stake_size = "HALF"
+            label      = "⚡ MODERATE"
+        else:
+            return _skip(f"Score {score} below threshold")
+
+        reason = (
+            f"{label} {direction} signal | "
+            f"Score: {score}/12 | "
+            f"RSI={rsi} | BB={'touched' if score >= 8 else 'near'} | "
+            f"ROC={roc:.4f} | Flip={flip}"
+        )
+
+        logger.info(
+            f"🎯 {pair} | {direction} | Score={score}/12 | "
+            f"RSI={rsi} | Flip={flip} | Extreme={extreme}"
+        )
+
+        # Map score 0-12 to 0-100 for compatibility with existing code
+        confidence_pct = round((score / 12) * 100, 1)
+
+        return {
             "direction":  direction,
-            "confidence": final_score,
-            "action":     action,
+            "confidence": confidence_pct,
+            "score":      score,
+            "action":     "TRADE",
             "stake_size": stake_size,
             "reason":     reason,
-            "pattern":    pat_data["pattern"],
+            "pattern":    "MEAN_REVERSION",
             "breakdown": {
-                "indicators": ind_score,
-                "pattern":    pat_score,
-                "volatility": vol_score,
-                "timeframes": tf_score,
+                "call_score":  call_score,
+                "put_score":   put_score,
+                "indicators":  {
+                    "agreements": score,
+                    "details": {
+                        "rsi":     {"value": rsi, "signal": breakdown.get("rsi", "")},
+                        "bb":      {"value": price, "signal": breakdown.get("bb", "")},
+                        "roc":     {"value": roc, "signal": breakdown.get("roc", "")},
+                        "flip":    {"value": flip, "signal": breakdown.get("flip", "")},
+                        "extreme": {"value": extreme, "signal": breakdown.get("extreme", "")},
+                    }
+                },
+                "pattern":    {"strength": score},
+                "volatility": {"level": "MEDIUM"},
+                "timeframes": {"agreements": 1, "total": 1},
             },
         }
 
-        emoji = "🚀" if action == "TRADE" else "⏸️"
-        logger.info(
-            f"{emoji} {pair} Confluence: {direction} | "
-            f"Score: {final_score}% | Action: {action} | "
-            f"Pattern: {pat_data['pattern']}"
-        )
-
-        return result
-
     except Exception as e:
-        logger.error(f"❌ Confluence calculation error: {e}")
-        return {
-            "direction":  "SKIP",
-            "confidence": 0,
-            "action":     "SKIP",
-            "stake_size": "SKIP",
-            "reason":     str(e),
-        }
+        import traceback
+        logger.error(f"❌ Confluence error on {pair}: {e}")
+        logger.error(traceback.format_exc())
+        return _skip(str(e))
+
+
+# ─────────────────────────────────────────────────
+# HELPER
+# ─────────────────────────────────────────────────
+
+def _skip(reason: str) -> dict:
+    return {
+        "direction":  "SKIP",
+        "confidence": 0,
+        "score":      0,
+        "action":     "SKIP",
+        "stake_size": "SKIP",
+        "reason":     reason,
+        "pattern":    "None",
+        "breakdown":  {},
+    }
