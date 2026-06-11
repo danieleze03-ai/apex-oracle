@@ -411,6 +411,7 @@ async def _place_trade_async(
         buy_data  = response["buy"]
         trade_id  = buy_data["contract_id"]
         buy_price = float(buy_data["buy_price"])
+        logger.info(f"🔍 DEBUG buy_data: {buy_data}")
 
         open_trades[trade_id] = {
             "pair":      pair,
