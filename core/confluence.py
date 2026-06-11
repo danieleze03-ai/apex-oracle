@@ -149,29 +149,48 @@ def calculate_confluence(
         )
         final_score = round(final_score, 1)
 
-        if ind_score["agreements"] >= 3:
-            final_score = max(final_score, 75.0)
+        # ── Conflict check — pattern vs indicators ──
+        pat_dir = pat_data.get("direction", "NEUTRAL")
+        pat_strength = pat_data.get("strength", 0)
+        if (
+            pat_dir != "NEUTRAL"
+            and pat_dir != direction
+            and pat_strength >= 7
+        ):
+            logger.warning(
+                f"⚠️ Conflict detected! Indicators say {direction} "
+                f"but pattern ({pat_data['pattern']}) says {pat_dir} "
+                f"(strength {pat_strength}/10) — SKIPPING"
+            )
+            return {
+                "direction":  "SKIP",
+                "confidence": final_score,
+                "action":     "SKIP",
+                "stake_size": "SKIP",
+                "reason":     f"⚠️ Pattern conflicts with indicators — skipping",
+                "pattern":    pat_data["pattern"],
+                "breakdown": {
+                    "indicators": ind_score,
+                    "pattern":    pat_score,
+                    "volatility": vol_score,
+                    "timeframes": tf_score,
+                },
+            }
 
-        if ind_score["agreements"] >= 3 and final_score >= 65:
-            if not vol_data["tradeable"]:
-                logger.warning(f"⚠️ Volatility flagged as non-tradeable, but overriding due to strong signal ({ind_score['agreements']}/5 agree, Score: {final_score}%).")
-
+        # ── Minimum 4/5 indicators must agree ────────
+        if ind_score["agreements"] >= 4 and final_score >= 80:
             if final_score >= 90:
                 action     = "TRADE"
                 stake_size = "FULL"
                 reason     = f"🔥 Exceptional {direction} confluence!"
-            elif final_score >= 75:
+            else:
                 action     = "TRADE"
                 stake_size = "FULL"
                 reason     = f"✅ Strong {direction} confluence"
-            elif final_score >= 65:
-                action     = "TRADE"
-                stake_size = "HALF"
-                reason     = f"⚡ Moderate {direction} — half stake"
-            else:
-                action     = "SKIP"
-                stake_size = "SKIP"
-                reason     = f"❌ Weak confluence ({final_score}%) — skipping"
+        elif ind_score["agreements"] >= 3 and final_score >= 80:
+            action     = "TRADE"
+            stake_size = "HALF"
+            reason     = f"⚡ Moderate {direction} — half stake"
         else:
             action     = "SKIP"
             stake_size = "SKIP"
