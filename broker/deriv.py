@@ -411,7 +411,6 @@ async def _place_trade_async(
         buy_data  = response["buy"]
         trade_id  = buy_data["contract_id"]
         buy_price = float(buy_data["buy_price"])
-        logger.info(f"🔍 DEBUG buy_data: {buy_data}")
 
         open_trades[trade_id] = {
             "pair":      pair,
@@ -489,18 +488,19 @@ async def _check_trade_result_async(trade_id: int) -> dict:
 
         profit = float(contract.get("profit", 0))
 
-        exit_price = float(contract.get("exit_tick_display_value", 0) or contract.get("current_spot", 0) or 0)
+        entry_price = float(contract.get("entry_spot", 0) or contract.get("entry_tick", 0) or 0)
+        exit_price  = float(contract.get("exit_spot",  0) or contract.get("exit_tick",  0) or 0)
 
         if profit > 0:
             logger.success(
                 f"✅ Trade {trade_id} → WIN! Profit: ${profit:.2f}"
             )
-            return {"result": "WIN", "profit": profit, "exit_price": exit_price}
+            return {"result": "WIN", "profit": profit, "entry_price": entry_price, "exit_price": exit_price}
         else:
             logger.warning(
                 f"❌ Trade {trade_id} → LOSS! ${profit:.2f}"
             )
-            return {"result": "LOSS", "profit": profit, "exit_price": exit_price}
+            return {"result": "LOSS", "profit": profit, "entry_price": entry_price, "exit_price": exit_price}
 
     except Exception as e:
         logger.error(f"❌ Failed to check trade result: {e}")

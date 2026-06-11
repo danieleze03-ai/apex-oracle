@@ -349,7 +349,7 @@ def execute_trade(signal: dict) -> bool:
             return False
 
         trade_id    = trade_result["trade_id"]
-        entry_price = trade_result.get("entry_price", 0.0)
+        entry_price = 0.0  # Retrieved from result, not entry
 
         # ── Send entry alert ──────────────────────
         asyncio.run(send_trade_entry({
@@ -380,10 +380,11 @@ def execute_trade(signal: dict) -> bool:
             logger.info(f"⏳ Waiting {wait_seconds}s for result in background...")
             time.sleep(wait_seconds)
 
-            result = check_trade_result(trade_id)
-            outcome = result["result"]
-            profit = result["profit"]
-            exit_price = result.get("exit_price", 0.0)
+            result      = check_trade_result(trade_id)
+            outcome     = result["result"]
+            profit      = result["profit"]
+            exit_price  = result.get("exit_price", 0.0)
+            entry_price = result.get("entry_price", 0.0)
             new_balance = get_balance()
 
             # Update risk state
