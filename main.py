@@ -12,6 +12,7 @@
 # - Expiry now 1min default, 3min for high score
 # - V100 removed from pair list
 # - Concurrent trade tracking ADDED
+# - PHANTOM MODE ADDED (AO-2.0) — anti-detection engine
 # ─────────────────────────────────────────────────
 
 import os
@@ -29,7 +30,8 @@ load_dotenv()
 # ─────────────────────────────────────────────────
 
 from core.logger import setup_logger
-from core.confluence import calculate_confluence    # NEW engine
+from core.confluence import calculate_confluence
+from core.phantom import phantom                    # ⚡ PHANTOM MODE
 
 # Broker
 from broker.deriv import (
@@ -89,8 +91,8 @@ import config
 # V100 removed. V25 and V10 lead (best oscillation)
 # ─────────────────────────────────────────────────
 
-ACTIVE_PAIRS = config.SYNTHETIC_PAIRS   # ["V25", "V10", "V50", "V75"]
-LOOP_INTERVAL = 30                       # seconds between scans
+ACTIVE_PAIRS  = config.SYNTHETIC_PAIRS
+LOOP_INTERVAL = 30
 
 # ─────────────────────────────────────────────────
 # BOT STATE
@@ -110,7 +112,7 @@ bot_state = {
 }
 
 # ─────────────────────────────────────────────────
-# SIGNAL PROCESSOR — SIMPLIFIED (no Groq, no patterns)
+# SIGNAL PROCESSOR
 # ─────────────────────────────────────────────────
 
 def process_signal(pair: str) -> dict:
@@ -121,40 +123,36 @@ def process_signal(pair: str) -> dict:
     3. Return decision — no AI gate, no pattern gate
     """
     try:
-        # ── Fetch candles (5min primary) ───────────
         candles = get_candles(pair, 5, 100)
         if not candles or len(candles) < 30:
             return {"action": "SKIP", "reason": "Not enough candle data"}
 
-        # ── Run confluence scoring ─────────────────
         result = calculate_confluence(candles, {}, pair)
 
-        # ── Log signal ─────────────────────────────
         log_signal({
-            "pair":       pair,
-            "direction":  result.get("direction", "SKIP"),
-            "confidence": result.get("confidence", 0),
-            "action":     result.get("action", "SKIP"),
+            "pair":        pair,
+            "direction":   result.get("direction", "SKIP"),
+            "confidence":  result.get("confidence", 0),
+            "action":      result.get("action", "SKIP"),
             "skip_reason": result.get("reason", ""),
         })
 
         bot_state["last_signal"] = {
-            "pair":       pair,
-            "direction":  result.get("direction"),
-            "score":      result.get("score", 0),
-            "time":       datetime.now().isoformat(),
+            "pair":      pair,
+            "direction": result.get("direction"),
+            "score":     result.get("score", 0),
+            "time":      datetime.now().isoformat(),
         }
         update_status("last_signal", bot_state["last_signal"])
 
         if result["action"] != "TRADE":
             return {"action": "SKIP", "reason": result.get("reason", "No signal")}
 
-        # ── Determine expiry based on score ────────
         score = result.get("score", 7)
         if score >= 10:
-            expiry = config.EXPIRY_HIGH_CONF   # 3 minutes
+            expiry = config.EXPIRY_HIGH_CONF
         else:
-            expiry = config.EXPIRY_DEFAULT     # 1 minute
+            expiry = config.EXPIRY_DEFAULT
 
         return {
             "action":     "TRADE",
@@ -186,7 +184,6 @@ def execute_trade(signal: dict) -> bool:
         expiry    = signal.get("expiry", config.EXPIRY_DEFAULT)
         balance   = get_balance()
 
-        # ── Calculate stake ───────────────────────
         stake = calculate_stake(
             balance,
             signal["confidence"],
@@ -201,7 +198,6 @@ def execute_trade(signal: dict) -> bool:
             f"${stake} | {expiry}min | Score={signal.get('score', '?')}/12"
         )
 
-        # ── Place trade ───────────────────────────
         trade_result = place_trade(pair, direction, stake, expiry)
         if not trade_result["success"]:
             error = trade_result.get("error", "unknown")
@@ -210,23 +206,20 @@ def execute_trade(signal: dict) -> bool:
 
         trade_id = trade_result["trade_id"]
 
-        # ── Register open trade ───────────────────
         register_trade_open(pair)
         bot_state["trade_active"] = True
 
-        # ── Send Telegram entry alert ─────────────
         asyncio.run(send_trade_entry({
-            "pair":       pair,
-            "direction":  direction,
-            "stake":      stake,
-            "expiry":     expiry,
-            "confidence": signal["confidence"],
-            "pattern":    signal.get("pattern", "MEAN_REVERSION"),
-            "mode":       bot_state["mode"],
+            "pair":        pair,
+            "direction":   direction,
+            "stake":       stake,
+            "expiry":      expiry,
+            "confidence":  signal["confidence"],
+            "pattern":     signal.get("pattern", "MEAN_REVERSION"),
+            "mode":        bot_state["mode"],
             "entry_price": 0.0,
         }))
 
-        # ── Update state ──────────────────────────
         bot_state["trades_today"] += 1
         bot_state["last_trade"] = {
             "pair":      pair,
@@ -237,7 +230,6 @@ def execute_trade(signal: dict) -> bool:
         update_status("trades_today", bot_state["trades_today"])
         update_status("last_trade",   bot_state["last_trade"])
 
-        # ── Background thread to wait for result ──
         def wait_for_result():
             try:
                 wait_sec = (expiry * 60) + 5
@@ -249,10 +241,11 @@ def execute_trade(signal: dict) -> bool:
                 profit  = result["profit"]
                 new_bal = get_balance()
 
-                # Update risk state
                 update_after_trade(outcome, profit)
 
-                # Update counters
+                # ⚡ PHANTOM — record trade completion
+                phantom.record_trade(result=outcome)
+
                 if outcome == "WIN":
                     bot_state["wins_today"] += 1
                     update_status("wins_today", bot_state["wins_today"])
@@ -260,35 +253,33 @@ def execute_trade(signal: dict) -> bool:
                     bot_state["losses_today"] += 1
                     update_status("losses_today", bot_state["losses_today"])
 
-                bot_state["balance"] = new_bal
+                bot_state["balance"]      = new_bal
                 bot_state["trade_active"] = False
                 update_status("balance", new_bal)
 
-                # Log to database
                 log_trade({
-                    "pair":           pair,
-                    "direction":      direction,
-                    "stake":          stake,
-                    "expiry_seconds": expiry * 60,
-                    "confidence":     signal["confidence"],
-                    "result":         outcome,
-                    "profit_loss":    profit,
-                    "balance_after":  new_bal,
-                    "pattern":        signal.get("pattern", "MEAN_REVERSION"),
+                    "pair":            pair,
+                    "direction":       direction,
+                    "stake":           stake,
+                    "expiry_seconds":  expiry * 60,
+                    "confidence":      signal["confidence"],
+                    "result":          outcome,
+                    "profit_loss":     profit,
+                    "balance_after":   new_bal,
+                    "pattern":         signal.get("pattern", "MEAN_REVERSION"),
                     "sentiment_score": 0,
-                    "groq_reasoning": f"Score={signal.get('score', 0)}/12",
-                    "mode":           bot_state["mode"],
+                    "groq_reasoning":  f"Score={signal.get('score', 0)}/12",
+                    "mode":            bot_state["mode"],
                 })
 
-                # Send result alert
                 asyncio.run(send_trade_result({
-                    "pair":         pair,
-                    "direction":    direction,
-                    "result":       outcome,
-                    "profit_loss":  profit,
+                    "pair":          pair,
+                    "direction":     direction,
+                    "result":        outcome,
+                    "profit_loss":   profit,
                     "balance_after": new_bal,
-                    "entry_price":  result.get("entry_price", 0.0),
-                    "exit_price":   result.get("exit_price", 0.0),
+                    "entry_price":   result.get("entry_price", 0.0),
+                    "exit_price":    result.get("exit_price", 0.0),
                 }))
 
                 logger.info(
@@ -325,18 +316,20 @@ def run_daily_tasks():
 
 
 # ─────────────────────────────────────────────────
-# MAIN TRADING LOOP — AO-2.0
+# MAIN TRADING LOOP — AO-2.0 + PHANTOM MODE
 # ─────────────────────────────────────────────────
 
 def trading_loop():
     """
     AO-2.0 Main Loop — every 30 seconds:
-    1. Check global risk rules (daily limit, target, etc.)
-    2. Check per-pair cooldowns
-    3. Run scoring engine on each pair
-    4. Execute only if score >= 7/12 AND pair cooldown clear
+    1. Phantom Mode gate — hour check, cooldown, daily target
+    2. Check global risk rules
+    3. Check per-pair cooldowns
+    4. Run scoring engine on each pair
+    5. Execute only if score >= MIN_SCORE AND all gates clear
     """
     logger.info("⚡ AO-2.0 Trading loop started!")
+    logger.info("👻 PHANTOM MODE active — anti-detection enabled")
     bot_state["running"] = True
     update_status("running", True)
 
@@ -357,6 +350,14 @@ def trading_loop():
             bot_state["balance"] = balance
             update_status("balance", balance)
 
+            # ── PHANTOM GATE — first check ────────
+            phantom_ok, phantom_reason = phantom.should_trade()
+            if not phantom_ok:
+                logger.info(f"👻 PHANTOM: {phantom_reason}")
+                run_daily_tasks()
+                time.sleep(LOOP_INTERVAL)
+                continue
+
             # ── Global risk gate ──────────────────
             risk = can_trade(balance)
             if not risk["allowed"]:
@@ -367,11 +368,11 @@ def trading_loop():
 
             # ── Trade safety: stuck flag reset ────
             if bot_state.get("trade_active"):
-                last = bot_state.get("last_trade", {})
+                last       = bot_state.get("last_trade", {})
                 trade_time = last.get("time", "")
                 if trade_time:
                     elapsed = (datetime.now() - datetime.fromisoformat(trade_time)).seconds
-                    if elapsed > 600:   # 10 min safety reset
+                    if elapsed > 600:
                         logger.warning("⚠️ Trade flag stuck — force resetting")
                         bot_state["trade_active"] = False
                     else:
@@ -383,27 +384,25 @@ def trading_loop():
             trade_placed = False
 
             for pair in ACTIVE_PAIRS:
-                # Per-pair cooldown check
                 pair_check = can_trade_pair(pair)
                 if not pair_check["allowed"]:
                     logger.debug(f"⏱️ {pair}: {pair_check['reason']}")
                     continue
 
-                # V75 requires higher score — enforced in scoring engine
-                # but we log it here for clarity
                 logger.info(
                     f"🔍 Scanning {pair} | "
                     f"Balance: ${balance:.2f} | "
-                    f"Trades today: {bot_state['trades_today']}/{config.MAX_DAILY_TRADES}"
+                    f"Trades today: {bot_state['trades_today']}/{config.MAX_DAILY_TRADES} | "
+                    f"Phantom: {phantom.trade_count}/{phantom.daily_target}"
                 )
 
                 signal = process_signal(pair)
 
                 if signal["action"] == "TRADE":
-                    # Extra guard: V75 needs score >= 9
                     if pair == "V75" and signal.get("score", 0) < config.V75_MIN_SCORE:
                         logger.info(
-                            f"⏭️ V75 score {signal.get('score')}/12 < {config.V75_MIN_SCORE} — skipping"
+                            f"⏭️ V75 score {signal.get('score')}/12 "
+                            f"< {config.V75_MIN_SCORE} — skipping"
                         )
                         continue
 
@@ -414,7 +413,7 @@ def trading_loop():
                     )
                     if execute_trade(signal):
                         trade_placed = True
-                        break   # One trade per cycle
+                        break
                 else:
                     logger.debug(f"⏭️ {pair}: {signal['reason']}")
 
@@ -471,17 +470,22 @@ def startup():
 
     asyncio.run(send_startup_report(balance, mode))
 
+    # ⚡ Log Phantom status on startup
+    ps = phantom.get_status()
+
     logger.success("=" * 50)
     logger.success(f"✅ {config.BOT_NAME} v{config.VERSION} ONLINE!")
-    logger.success(f"💰 Balance:      ${balance:.2f}")
-    logger.success(f"📊 Mode:         {mode}")
-    logger.success(f"🎯 Min Score:    {config.MIN_SCORE}/12 to trade")
-    logger.success(f"💱 Pairs:        {', '.join(ACTIVE_PAIRS)}")
-    logger.success(f"⏱️  Expiry:       {config.EXPIRY_DEFAULT}min / {config.EXPIRY_HIGH_CONF}min")
-    logger.success(f"🔒 Daily target: ${config.DAILY_PROFIT_TARGET} then STOP")
-    logger.success(f"🛡️  Daily loss:   {config.DAILY_LOSS_LIMIT}% then STOP")
-    logger.success(f"🚫 Groq AI:      DISABLED (AO-2.0)")
-    logger.success(f"🚫 V100:         EXCLUDED (too noisy)")
+    logger.success(f"💰 Balance:        ${balance:.2f}")
+    logger.success(f"📊 Mode:           {mode}")
+    logger.success(f"🎯 Min Score:      {config.MIN_SCORE}/12 to trade")
+    logger.success(f"💱 Pairs:          {', '.join(ACTIVE_PAIRS)}")
+    logger.success(f"⏱️  Expiry:         {config.EXPIRY_DEFAULT}min / {config.EXPIRY_HIGH_CONF}min")
+    logger.success(f"🔒 Daily target:   ${config.DAILY_PROFIT_TARGET} then STOP")
+    logger.success(f"🛡️  Daily loss:     {config.DAILY_LOSS_LIMIT}% then STOP")
+    logger.success(f"👻 Phantom target: {ps['daily_target']} trades today")
+    logger.success(f"👻 Phantom bursts: hours {ps['burst_hours']}")
+    logger.success(f"🚫 Groq AI:        DISABLED (AO-2.0)")
+    logger.success(f"🚫 V100:           EXCLUDED (too noisy)")
     logger.success("=" * 50)
 
     return telegram_app
