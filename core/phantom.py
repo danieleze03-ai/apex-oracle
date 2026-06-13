@@ -132,6 +132,12 @@ class PhantomEngine:
         if score == 0:
             return False, f"Hour {hour}:00 WAT has zero activity score"
 
+        # 4. Reserve 6 trades for golden hours 18:00-19:00 WAT
+        if hour not in [18, 19]:
+            remaining = self.daily_target - self.trade_count
+            if remaining <= 6:
+                return False, f"🔒 Reserving last 6 trades for golden hours 18:00-19:00 WAT"
+
         # 4. Cooldown check
         if self.last_trade_time:
             cooldown = self._get_dynamic_cooldown()

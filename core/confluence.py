@@ -6,23 +6,24 @@
 #
 # KEY INSIGHT: Deriv synthetic indices OSCILLATE. They do NOT trend.
 # This engine bets on price snapping BACK from extremes.
-# A trade only fires when score >= MIN_SCORE (7 out of 12 max).
+# A trade only fires when score >= MIN_SCORE (8 out of 12 max).
 # Fewer trades. Better trades. Higher win rate.
 # ─────────────────────────────────────────────────
 
 import numpy as np
 import pandas as pd
 from loguru import logger
+import config
 
 # ─────────────────────────────────────────────────
-# SCORING THRESHOLDS
+# SCORING THRESHOLDS — reads from config.py
 # ─────────────────────────────────────────────────
 
-MIN_SCORE           = 7      # Minimum points to fire a trade (out of 12)
-RSI_EXTREME_HIGH    = 75     # RSI above this → strong FALL signal
-RSI_STRONG_HIGH     = 70     # RSI above this → moderate FALL signal
-RSI_EXTREME_LOW     = 25     # RSI below this → strong RISE signal
-RSI_STRONG_LOW      = 30     # RSI below this → moderate RISE signal
+MIN_SCORE           = config.MIN_SCORE           # 8 — reads from config
+RSI_EXTREME_HIGH    = config.RSI_EXTREME_HIGH    # 78 — stricter overbought
+RSI_STRONG_HIGH     = config.RSI_STRONG_HIGH     # 72
+RSI_EXTREME_LOW     = config.RSI_EXTREME_LOW     # 22 — stricter oversold
+RSI_STRONG_LOW      = config.RSI_STRONG_LOW      # 28
 BB_TOUCH_THRESHOLD  = 0.98   # Price within 2% of BB band = touching it
 ROC_PERIOD          = 5      # Rate of Change lookback period
 ROC_FADE_THRESHOLD  = 0.0    # ROC crossing zero = momentum fading
@@ -82,12 +83,10 @@ def _detect_direction_flip(closes: np.ndarray, lookback: int = 3) -> str:
     if len(closes) < lookback + 1:
         return "NONE"
     recent = closes[-(lookback + 1):]
-    # Was going down, now turning up
     was_falling = recent[-2] < recent[-3] if len(recent) >= 3 else False
     now_rising  = recent[-1] > recent[-2]
     if was_falling and now_rising:
         return "UP_FLIP"
-    # Was going up, now turning down
     was_rising  = recent[-2] > recent[-3] if len(recent) >= 3 else False
     now_falling = recent[-1] < recent[-2]
     if was_rising and now_falling:
@@ -109,10 +108,8 @@ def _is_local_extreme(closes: np.ndarray, lookback: int = 10) -> str:
     spread  = high - low
     if spread == 0:
         return "NONE"
-    # Within top 15% of the range = near high
     if current >= high - (spread * 0.15):
         return "HIGH"
-    # Within bottom 15% of the range = near low
     if current <= low + (spread * 0.15):
         return "LOW"
     return "NONE"
@@ -123,7 +120,7 @@ def _is_local_extreme(closes: np.ndarray, lookback: int = 10) -> str:
 # ─────────────────────────────────────────────────
 
 def _score_direction(
-    direction: str,    # "CALL" or "PUT"
+    direction: str,
     rsi:       float,
     bb:        dict,
     price:     float,
@@ -134,7 +131,7 @@ def _score_direction(
     """
     Score a given direction (CALL=RISE or PUT=FALL).
     Maximum possible score = 12.
-    Minimum to trade = 7.
+    Minimum to trade = 8 (from config).
 
     Scoring rules (mean reversion on synthetics):
     ─────────────────────────────────────────────
@@ -241,7 +238,6 @@ def _score_direction(
 
 # ─────────────────────────────────────────────────
 # MAIN CONFLUENCE CALCULATOR
-# Called by main.py — replaces old calculate_confluence()
 # ─────────────────────────────────────────────────
 
 def calculate_confluence(
@@ -250,14 +246,8 @@ def calculate_confluence(
     pair:            str = "",
 ) -> dict:
     """
-    New Mean Reversion Confluence Engine for Deriv Synthetics.
-
-    Returns dict with:
-      direction:  "CALL", "PUT", or "SKIP"
-      confidence: score out of 12 (renamed for compatibility)
-      action:     "TRADE" or "SKIP"
-      stake_size: "FULL", "HALF", or "SKIP"
-      reason:     explanation string
+    Mean Reversion Confluence Engine for Deriv Synthetics.
+    Only fires on score >= 8/12 — no weak signals allowed.
     """
     try:
         # ── Minimum data guard ─────────────────────
@@ -301,7 +291,6 @@ def calculate_confluence(
             score     = put_score
             breakdown = put_breakdown
         else:
-            # Tied = no clear signal
             logger.debug(f"⏭️ {pair} — tied score CALL={call_score} PUT={put_score}")
             return _skip("No clear directional edge (tied scores)")
 
@@ -312,7 +301,7 @@ def calculate_confluence(
                 f"Score margin too small ({direction}={score} vs opp={opposing}) — no edge"
             )
 
-        # ── Minimum score gate ─────────────────────
+        # ── Minimum score gate — 8/12 required ────
         if score < MIN_SCORE:
             return _skip(
                 f"Score {score}/12 below minimum {MIN_SCORE} — skipping"
@@ -324,12 +313,9 @@ def calculate_confluence(
             label      = "🔥 EXCEPTIONAL"
         elif score >= 8:
             stake_size = "FULL"
-            label      = "✅ STRONG"
-        elif score >= MIN_SCORE:
-            stake_size = "HALF"
-            label      = "⚡ MODERATE"
+            label      = "✅ GOOD"
         else:
-            return _skip(f"Score {score} below threshold")
+            return _skip(f"Score {score}/12 below minimum {MIN_SCORE} — skipping")
 
         reason = (
             f"{label} {direction} signal | "
@@ -343,7 +329,6 @@ def calculate_confluence(
             f"RSI={rsi} | Flip={flip} | Extreme={extreme}"
         )
 
-        # Map score 0-12 to 0-100 for compatibility with existing code
         confidence_pct = round((score / 12) * 100, 1)
 
         return {

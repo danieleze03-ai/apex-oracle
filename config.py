@@ -79,7 +79,7 @@ EXPIRY_SECONDS   = 180  # updated for backward compat
 # SIGNAL ENGINE — AO-2.0 STRICT SCORING SYSTEM
 # Only "screaming" signals pass now
 # ─────────────────────────────────────────────────
-MIN_SCORE        = 10        # was 7 — must score 10/12 minimum
+MIN_SCORE        = 8         # sweet spot — blocks weak 7/12, allows strong signals
 RSI_PERIOD       = 14
 RSI_EXTREME_HIGH = 78        # was 75 — stricter overbought
 RSI_STRONG_HIGH  = 72
@@ -106,9 +106,9 @@ MIN_CANDLES         = 30
 # Confidence thresholds — updated for MIN_SCORE = 10
 CONFIDENCE = {
     "full_trade": 83,   # score 10/12 = 83%
-    "half_trade": 83,   # same — no half trades anymore
+    "half_trade": 67,   # score 8/12 = 67%
     "skip":       0,
-    "minimum":    83,   # was 58 — raised to match MIN_SCORE
+    "minimum":    67,   # score 8/12 minimum
 }
 
 # ─────────────────────────────────────────────────

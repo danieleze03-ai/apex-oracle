@@ -26,7 +26,7 @@ load_dotenv()
 # SETTINGS — Edit these in Render Environment panel
 # ─────────────────────────────────────────────────
 
-MAX_DAILY_TRADES            = int(os.getenv("MAX_DAILY_TRADES", 10))
+MAX_DAILY_TRADES            = int(os.getenv("MAX_DAILY_TRADES", 25))
 DAILY_LOSS_LIMIT_PCT        = float(os.getenv("DAILY_LOSS_LIMIT", 5.0))
 DAILY_PROFIT_TARGET_PCT     = float(os.getenv("DAILY_PROFIT_TARGET_PCT", 10.0))   # ✅ FIXED: reads correct env var
 MAX_CONSECUTIVE_LOSSES      = int(os.getenv("MAX_CONSECUTIVE_LOSSES", 3))
