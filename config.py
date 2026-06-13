@@ -115,7 +115,7 @@ CONFIDENCE = {
 # RISK MANAGEMENT — AO-2.0 STRICT MODE
 # ─────────────────────────────────────────────────
 STAKE_PERCENT          = float(os.getenv("STAKE_PERCENT", 1.0))      # was 1.5
-MAX_DAILY_TRADES       = int(os.getenv("MAX_DAILY_TRADES", 6))        # was 10
+MAX_DAILY_TRADES       = int(os.getenv("MAX_DAILY_TRADES", 25))        # was 10
 MAX_CONSECUTIVE_LOSSES = int(os.getenv("MAX_CONSECUTIVE_LOSSES", 2))  # was 3
 DAILY_LOSS_LIMIT       = float(os.getenv("DAILY_LOSS_LIMIT", 4.0))    # was 5.0
 DAILY_PROFIT_TARGET    = float(os.getenv("DAILY_PROFIT_TARGET", 1000.0))# was 30 — realistic
