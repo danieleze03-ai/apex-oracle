@@ -311,7 +311,7 @@ def calculate_confluence(
         if score >= 10:
             stake_size = "FULL"
             label      = "🔥 EXCEPTIONAL"
-        elif score >= 8:
+        elif score >= 7:
             stake_size = "FULL"
             label      = "✅ GOOD"
         else:

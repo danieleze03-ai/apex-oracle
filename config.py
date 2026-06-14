@@ -79,7 +79,7 @@ EXPIRY_SECONDS   = 180  # updated for backward compat
 # SIGNAL ENGINE — AO-2.0 STRICT SCORING SYSTEM
 # Only "screaming" signals pass now
 # ─────────────────────────────────────────────────
-MIN_SCORE        = 8         # sweet spot — blocks weak 7/12, allows strong signals
+MIN_SCORE        = 7         # restored — allows strong 7/12 signals
 RSI_PERIOD       = 14
 RSI_EXTREME_HIGH = 78        # was 75 — stricter overbought
 RSI_STRONG_HIGH  = 72
