@@ -14,7 +14,7 @@
 # - Concurrent trade tracking ADDED
 # - PHANTOM MODE ADDED (AO-2.0) — anti-detection engine
 # - DAILY BIAS FILTER ADDED (AO-2.1) — trade with the trend
-# - MTF BIAS FILTER UPGRADED (AO-2.2) — 1H + 15M + 5M confirmation
+# - MTF BIAS FILTER UPGRADED (AO-2.3) — 15M + 5M must both agree
 # ─────────────────────────────────────────────────
 
 import os
@@ -115,27 +115,24 @@ bot_state = {
 }
 
 # ─────────────────────────────────────────────────
-# MTF BIAS ENGINE — AO-2.2
+# MTF BIAS ENGINE — AO-2.3
 # Multi-Timeframe confirmation aligned to our
 # 3-5 minute trade duration.
 #
-# 3 layers checked per signal:
-#   1H  — overall day direction (big picture)
-#   15M — medium term momentum (is move still going?)
+# 1H REMOVED — too far from our trade reality.
+# Our trades expire in 3-5 minutes. The 15M and
+# 5M timeframes live in the same world as our trades.
+#
+# 2 layers checked per signal:
+#   15M — medium term momentum (is the move going?)
 #   5M  — immediate entry context (right now)
 #
-# Rule: at least 2 out of 3 timeframes must agree
-# with the signal direction before a trade fires.
+# Rule: BOTH 15M and 5M must agree with the signal
+# direction before a trade fires. 2/2 required.
 #
-# 1H bias is cached all day (only fetched once).
-# 15M and 5M are fetched fresh on every signal
-# because they change frequently.
+# If either is NEUTRAL — trade is blocked.
+# We only want clean, aligned setups.
 # ─────────────────────────────────────────────────
-
-_bias_cache = {
-    "date": None,
-    "1h":   None,   # cached all day
-}
 
 def _calc_ema(closes: list, period: int) -> float:
     """Calculate EMA and return only the last value."""
@@ -184,27 +181,19 @@ def _get_bias_from_candles(candles: list, label: str) -> str:
 
 def get_mtf_bias(pair: str, signal_direction: str) -> tuple[bool, str]:
     """
-    Multi-Timeframe Bias Check — AO-2.2
+    Multi-Timeframe Bias Check — AO-2.3
 
-    Checks 1H (cached), 15M (fresh), 5M (fresh).
-    Requires at least 2 out of 3 to agree with
-    the signal direction before approving.
+    Checks 15M and 5M only — both fresh on every signal.
+    Both must agree with the signal direction.
+    1H removed — irrelevant to 3-5 minute trades.
+
+    CALL signal → both 15M and 5M must be UP
+    PUT signal  → both 15M and 5M must be DOWN
 
     Returns:
         (approved: bool, reason: str)
     """
     try:
-        today = datetime.now().date()
-
-        # ── 1H bias — fetch once per day ─────────
-        if _bias_cache["date"] != today or _bias_cache["1h"] is None:
-            candles_1h = get_candles(pair, 60, 50)
-            bias_1h = _get_bias_from_candles(candles_1h, "1H")
-            _bias_cache["date"] = today
-            _bias_cache["1h"]   = bias_1h
-        else:
-            bias_1h = _bias_cache["1h"]
-
         # ── 15M bias — fresh every signal ────────
         candles_15m = get_candles(pair, 15, 50)
         bias_15m = _get_bias_from_candles(candles_15m, "15M")
@@ -213,47 +202,24 @@ def get_mtf_bias(pair: str, signal_direction: str) -> tuple[bool, str]:
         candles_5m = get_candles(pair, 5, 50)
         bias_5m = _get_bias_from_candles(candles_5m, "5M")
 
-        # ── Count agreements ──────────────────────
-        # Map signal direction to what we're looking for
-        # CALL = we want UP biases
-        # PUT  = we want DOWN biases
+        # ── Target direction ──────────────────────
         target = "UP" if signal_direction == "CALL" else "DOWN"
 
-        votes = {
-            "1H":  bias_1h,
-            "15M": bias_15m,
-            "5M":  bias_5m,
-        }
-
-        agreements = sum(
-            1 for tf, b in votes.items()
-            if b == target
-        )
-
-        # NEUTRAL counts as a half-agreement — doesn't
-        # block but doesn't fully support either
-        neutrals = sum(
-            1 for tf, b in votes.items()
-            if b == "NEUTRAL"
-        )
-
-        # Need at least 2 agreements out of 3
-        # A neutral on one TF with 1 agreement = not enough
-        # A neutral on one TF with 2 agreements = approved
-        approved = agreements >= 2
+        # ── Both must agree — 2/2 ─────────────────
+        both_agree = (bias_15m == target) and (bias_5m == target)
 
         summary = (
-            f"1H={bias_1h} | 15M={bias_15m} | 5M={bias_5m} | "
-            f"Agreements={agreements}/3 for {signal_direction}"
+            f"15M={bias_15m} | 5M={bias_5m} | "
+            f"Need both={target} for {signal_direction}"
         )
 
-        if approved:
-            reason = f"✅ MTF approved ({agreements}/3 agree) | {summary}"
+        if both_agree:
+            reason = f"✅ MTF approved (2/2 agree) | {summary}"
         else:
-            reason = f"❌ MTF blocked ({agreements}/3 agree, need 2) | {summary}"
+            reason = f"❌ MTF blocked (not 2/2) | {summary}"
 
         logger.info(f"🔭 MTF Check: {reason}")
-        return approved, reason
+        return both_agree, reason
 
     except Exception as e:
         logger.error(f"❌ MTF bias error: {e}")
@@ -262,15 +228,15 @@ def get_mtf_bias(pair: str, signal_direction: str) -> tuple[bool, str]:
 
 
 # ─────────────────────────────────────────────────
-# SIGNAL PROCESSOR — AO-2.2
+# SIGNAL PROCESSOR — AO-2.3
 # ─────────────────────────────────────────────────
 
 def process_signal(pair: str) -> dict:
     """
-    AO-2.2 Signal Pipeline:
+    AO-2.3 Signal Pipeline:
     1. Fetch 5min candles
     2. Run mean reversion scoring engine
-    3. MTF bias check — 1H + 15M + 5M (2/3 must agree)
+    3. MTF bias check — 15M + 5M must both agree
     4. Return decision
     """
     try:
@@ -300,7 +266,7 @@ def process_signal(pair: str) -> dict:
             return {"action": "SKIP", "reason": result.get("reason", "No signal")}
 
         # ── MTF Bias Filter ───────────────────────
-        # 1H + 15M + 5M must agree 2 out of 3
+        # 15M + 5M must both agree — 2/2
         signal_direction = result["direction"]
         mtf_approved, mtf_reason = get_mtf_bias(pair, signal_direction)
 
@@ -480,22 +446,22 @@ def run_daily_tasks():
 
 
 # ─────────────────────────────────────────────────
-# MAIN TRADING LOOP — AO-2.2 + PHANTOM MODE
+# MAIN TRADING LOOP — AO-2.3 + PHANTOM MODE
 # ─────────────────────────────────────────────────
 
 def trading_loop():
     """
-    AO-2.2 Main Loop — every 30 seconds:
+    AO-2.3 Main Loop — every 30 seconds:
     1. Phantom Mode gate — hour check, cooldown, daily target
     2. Check global risk rules
     3. Check per-pair cooldowns
     4. Run scoring engine on each pair
-    5. MTF bias filter — 1H + 15M + 5M (2/3 must agree)
+    5. MTF bias filter — 15M + 5M must both agree (2/2)
     6. Execute only if all gates clear
     """
-    logger.info("⚡ AO-2.2 Trading loop started!")
+    logger.info("⚡ AO-2.3 Trading loop started!")
     logger.info("👻 PHANTOM MODE active — anti-detection enabled")
-    logger.info("🔭 MTF BIAS FILTER active — 1H + 15M + 5M confirmation")
+    logger.info("🔭 MTF BIAS FILTER active — 15M + 5M must both agree")
     bot_state["running"] = True
     update_status("running", True)
 
@@ -559,8 +525,7 @@ def trading_loop():
                     f"🔍 Scanning {pair} | "
                     f"Balance: ${balance:.2f} | "
                     f"Trades today: {bot_state['trades_today']}/{config.MAX_DAILY_TRADES} | "
-                    f"Phantom: {phantom.trade_count}/{phantom.daily_target} | "
-                    f"1H Bias: {_bias_cache.get('1h', 'UNKNOWN')}"
+                    f"Phantom: {phantom.trade_count}/{phantom.daily_target}"
                 )
 
                 signal = process_signal(pair)
@@ -641,12 +606,6 @@ def startup():
     # ⚡ Phantom status
     ps = phantom.get_status()
 
-    # 🔭 Pre-fetch 1H bias on startup
-    candles_1h = get_candles("V10", 60, 50)
-    startup_bias = _get_bias_from_candles(candles_1h, "1H")
-    _bias_cache["date"] = datetime.now().date()
-    _bias_cache["1h"]   = startup_bias
-
     logger.success("=" * 50)
     logger.success(f"✅ {config.BOT_NAME} v{config.VERSION} ONLINE!")
     logger.success(f"💰 Balance:        ${balance:.2f}")
@@ -658,7 +617,7 @@ def startup():
     logger.success(f"🛡️  Daily loss:     {config.DAILY_LOSS_LIMIT}% then STOP")
     logger.success(f"👻 Phantom target: {ps['daily_target']} trades today")
     logger.success(f"👻 Phantom bursts: hours {ps['burst_hours']}")
-    logger.success(f"🔭 MTF 1H bias:    {startup_bias} — 15M + 5M checked per signal")
+    logger.success(f"🔭 MTF filter:     15M + 5M must both agree (2/2)")
     logger.success(f"🚫 Groq AI:        DISABLED (AO-2.0)")
     logger.success(f"🚫 V100:           EXCLUDED (too noisy)")
     logger.success("=" * 50)
