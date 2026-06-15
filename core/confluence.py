@@ -26,6 +26,12 @@
 #
 # HARD RULE:
 #   If 3/3 TFs not aligned → NO TRADE, score irrelevant
+#
+# v2.5.1 FIX:
+#   Per-timeframe EMA thresholds replace single global threshold.
+#   3m=0.02%  5m=0.03%  10m=0.07%
+#   Reason: shorter candles produce smaller EMA diffs naturally.
+#   Single threshold of 0.07% was impossible for 3m/5m to cross.
 # ─────────────────────────────────────────────────
 
 import os
@@ -40,7 +46,7 @@ MIN_SCORE         = config.MIN_SCORE            # 10
 PHANTOM_MIN_SCORE = config.PHANTOM_MIN_SCORE    # 8
 EMA_FAST          = config.EMA_FAST             # 8
 EMA_SLOW          = config.EMA_SLOW             # 21
-EMA_DIFF_THRESH   = config.EMA_DIFF_THRESHOLD   # 0.0007
+EMA_DIFF_THRESH   = config.EMA_DIFF_THRESHOLD   # 0.0007 (kept for EMA strength check)
 RSI_PERIOD        = config.RSI_PERIOD           # 14
 RSI_BRAKE_HIGH    = config.RSI_BRAKE_HIGH       # 70
 RSI_BRAKE_LOW     = config.RSI_BRAKE_LOW        # 30
@@ -49,6 +55,15 @@ RSI_PULLBACK_HIGH = config.RSI_PULLBACK_HIGH    # 55
 MACD_FAST         = config.MACD_FAST            # 12
 MACD_SLOW         = config.MACD_SLOW            # 26
 MACD_SIGNAL       = config.MACD_SIGNAL          # 9
+
+# ─────────────────────────────────────────────────
+# PER-TIMEFRAME EMA THRESHOLDS  ← v2.5.1 FIX
+# Shorter candles produce smaller diffs — each TF
+# gets its own realistic threshold based on log data.
+# ─────────────────────────────────────────────────
+EMA_THRESH_3M  = 0.0002   # 0.02% — 3m candles are tight
+EMA_THRESH_5M  = 0.0003   # 0.03% — 5m candles slightly wider
+EMA_THRESH_10M = 0.0007   # 0.07% — 10m unchanged, already working
 
 
 # ─────────────────────────────────────────────────
@@ -95,9 +110,9 @@ def _calc_macd(closes: np.ndarray) -> dict:
     """MACD line, signal line, histogram."""
     if len(closes) < MACD_SLOW + MACD_SIGNAL:
         return {"macd": 0.0, "signal": 0.0, "hist": 0.0, "prev_hist": 0.0}
-    fast_ema   = _ema_series(closes, MACD_FAST)
-    slow_ema   = _ema_series(closes, MACD_SLOW)
-    macd_line  = fast_ema - slow_ema
+    fast_ema    = _ema_series(closes, MACD_FAST)
+    slow_ema    = _ema_series(closes, MACD_SLOW)
+    macd_line   = fast_ema - slow_ema
     signal_line = _ema_series(macd_line, MACD_SIGNAL)
     hist        = macd_line - signal_line
     return {
@@ -138,33 +153,43 @@ def _check_tf_alignment(
 ) -> tuple:
     """
     For each TF compute EMA8 vs EMA21.
-    Count as UP/DOWN only if |diff/price| >= EMA_DIFF_THRESH (0.07%).
-    Below threshold = NEUTRAL.
+    Each timeframe uses its OWN threshold (v2.5.1 fix):
+      3m  → 0.02%  (EMA_THRESH_3M)
+      5m  → 0.03%  (EMA_THRESH_5M)
+      10m → 0.07%  (EMA_THRESH_10M)
 
     Points:
       1pt per TF aligned in same direction (max 3)
-      +1 bonus if ALL 3 agree (must have all 3)
+      +1 bonus if ALL 3 agree
 
-    Returns: (direction, score, aligned_count, diffs, details)
+    Returns: (direction, score, aligned_count, tf_results)
     """
+    # Map each label to its closes array AND its own threshold
+    tf_config = [
+        ("3m",  closes_3m,  EMA_THRESH_3M),
+        ("5m",  closes_5m,  EMA_THRESH_5M),
+        ("10m", closes_10m, EMA_THRESH_10M),
+    ]
+
     results = {}
-    for label, closes in [("3m", closes_3m), ("5m", closes_5m), ("10m", closes_10m)]:
+    for label, closes, thresh in tf_config:
         if closes is None or len(closes) < EMA_SLOW + 5:
             results[label] = {"dir": "NEUTRAL", "diff_pct": 0.0}
             continue
 
-        fast = _ema(closes, EMA_FAST)
-        slow = _ema(closes, EMA_SLOW)
+        fast  = _ema(closes, EMA_FAST)
+        slow  = _ema(closes, EMA_SLOW)
         price = float(closes[-1])
+
         if price == 0:
             results[label] = {"dir": "NEUTRAL", "diff_pct": 0.0}
             continue
 
-        diff_pct = (fast - slow) / price  # signed
+        diff_pct = (fast - slow) / price  # signed decimal
 
-        if diff_pct >= EMA_DIFF_THRESH:
+        if diff_pct >= thresh:
             direction = "UP"
-        elif diff_pct <= -EMA_DIFF_THRESH:
+        elif diff_pct <= -thresh:
             direction = "DOWN"
         else:
             direction = "NEUTRAL"
@@ -174,20 +199,20 @@ def _check_tf_alignment(
             "diff_pct": round(diff_pct * 100, 4),
             "fast":     round(fast, 4),
             "slow":     round(slow, 4),
+            "thresh":   round(thresh * 100, 4),  # for logging clarity
         }
 
-    dirs = [v["dir"] for v in results.values()]
-
+    dirs       = [v["dir"] for v in results.values()]
     up_count   = dirs.count("UP")
     down_count = dirs.count("DOWN")
 
     if up_count >= 3:
         agreed_dir = "UP"
-        score      = 3 + 1  # 3 TFs + bonus
+        score      = 4   # 3 TFs + bonus
         aligned    = 3
     elif down_count >= 3:
         agreed_dir = "DOWN"
-        score      = 3 + 1
+        score      = 4
         aligned    = 3
     elif up_count == 2:
         agreed_dir = "UP"
@@ -212,26 +237,34 @@ def _check_tf_alignment(
 def _check_ema_strength(tf_results: dict, trend_dir: str) -> tuple:
     """
     How strong is the trend? Avg absolute diff across aligned TFs.
-    > 2× threshold → 2pts
-    > 1× threshold → 1pt
+    Uses each TF's own threshold for fair comparison.
+    > 2× its threshold → 2pts
+    > 1× its threshold → 1pt
     """
-    diffs = []
-    for v in tf_results.values():
-        if v["dir"] != "NEUTRAL" and v["dir"] == ("UP" if trend_dir == "UP" else "DOWN"):
-            diffs.append(abs(v["diff_pct"]) / 100)  # back to decimal
+    thresh_map = {
+        "3m":  EMA_THRESH_3M,
+        "5m":  EMA_THRESH_5M,
+        "10m": EMA_THRESH_10M,
+    }
 
-    if not diffs:
+    ratios = []
+    for label, v in tf_results.items():
+        if v["dir"] != "NEUTRAL" and v["dir"] == trend_dir:
+            thresh = thresh_map.get(label, EMA_DIFF_THRESH)
+            ratio  = (abs(v["diff_pct"]) / 100) / thresh
+            ratios.append(ratio)
+
+    if not ratios:
         return 0, "No aligned TFs for strength check"
 
-    avg_diff = sum(diffs) / len(diffs)
-    thresh   = EMA_DIFF_THRESH
+    avg_ratio = sum(ratios) / len(ratios)
 
-    if avg_diff >= thresh * 2:
-        return 2, f"+2 EMA strength (avg diff={avg_diff*100:.4f}% ≥ {thresh*200:.3f}%)"
-    elif avg_diff >= thresh:
-        return 1, f"+1 EMA strength (avg diff={avg_diff*100:.4f}% ≥ {thresh*100:.3f}%)"
+    if avg_ratio >= 2.0:
+        return 2, f"+2 EMA strength (avg {avg_ratio:.2f}× above threshold)"
+    elif avg_ratio >= 1.0:
+        return 1, f"+1 EMA strength (avg {avg_ratio:.2f}× above threshold)"
     else:
-        return 0, f"0 EMA strength (avg diff={avg_diff*100:.4f}% below threshold)"
+        return 0, f"0 EMA strength (avg {avg_ratio:.2f}× — below threshold)"
 
 
 # ─────────────────────────────────────────────────
@@ -241,7 +274,7 @@ def _check_ema_strength(tf_results: dict, trend_dir: str) -> tuple:
 def _check_pullback_resume(closes_1m: np.ndarray, trend_dir: str) -> tuple:
     """
     Checks if 1min RSI dipped into pullback zone then turned back.
-    
+
     For CALL (uptrend):
       RSI dipped to 40-55 range in recent candles, now rising back up.
     For PUT (downtrend):
@@ -257,17 +290,14 @@ def _check_pullback_resume(closes_1m: np.ndarray, trend_dir: str) -> tuple:
 
     rsi_arr = _rsi_series(closes_1m, RSI_PERIOD)
 
-    # Look at last 8 RSI values for the dip
-    lookback = min(8, len(rsi_arr) - 1)
+    lookback    = min(8, len(rsi_arr) - 1)
     recent_rsi  = rsi_arr[-lookback:]
     current_rsi = float(rsi_arr[-1])
     prev_rsi    = float(rsi_arr[-2]) if len(rsi_arr) > 1 else current_rsi
 
     if trend_dir == "UP":
-        # Dip: RSI touched between 40-55
         dip_detected = any(RSI_PULLBACK_LOW <= r <= RSI_PULLBACK_HIGH for r in recent_rsi)
-        # Resume: RSI now turning UP
-        resume = current_rsi > prev_rsi and current_rsi >= RSI_PULLBACK_LOW
+        resume       = current_rsi > prev_rsi and current_rsi >= RSI_PULLBACK_LOW
 
         if dip_detected and resume:
             return 3, f"+3 Pullback-resume (RSI dipped, now rising @ {current_rsi:.1f})"
@@ -279,10 +309,8 @@ def _check_pullback_resume(closes_1m: np.ndarray, trend_dir: str) -> tuple:
             return 0, f"0 No pullback-resume (RSI={current_rsi:.1f})"
 
     else:  # DOWN
-        # Rise: RSI touched between 45-60 (mirror of pullback zone)
         rise_detected = any(RSI_PULLBACK_LOW <= r <= RSI_PULLBACK_HIGH for r in recent_rsi)
-        # Resume: RSI now turning DOWN
-        resume = current_rsi < prev_rsi and current_rsi <= RSI_PULLBACK_HIGH
+        resume        = current_rsi < prev_rsi and current_rsi <= RSI_PULLBACK_HIGH
 
         if rise_detected and resume:
             return 3, f"+3 Pullback-resume (RSI rose, now falling @ {current_rsi:.1f})"
@@ -315,13 +343,13 @@ def _check_rsi_brake(closes_1m: np.ndarray, trend_dir: str) -> tuple:
         if rsi < RSI_BRAKE_HIGH:
             return 1, f"+1 RSI brake OK (RSI={rsi:.1f} < {RSI_BRAKE_HIGH} — not overbought)"
         else:
-            return 0, f"0 RSI brake BLOCKED (RSI={rsi:.1f} >= {RSI_BRAKE_HIGH} — too late, overbought)"
+            return 0, f"0 RSI brake BLOCKED (RSI={rsi:.1f} >= {RSI_BRAKE_HIGH} — too late)"
 
     else:  # DOWN
         if rsi > RSI_BRAKE_LOW:
             return 1, f"+1 RSI brake OK (RSI={rsi:.1f} > {RSI_BRAKE_LOW} — not oversold)"
         else:
-            return 0, f"0 RSI brake BLOCKED (RSI={rsi:.1f} <= {RSI_BRAKE_LOW} — too late, oversold)"
+            return 0, f"0 RSI brake BLOCKED (RSI={rsi:.1f} <= {RSI_BRAKE_LOW} — too late)"
 
 
 # ─────────────────────────────────────────────────
@@ -339,15 +367,15 @@ def _check_macd_momentum(closes_1m: np.ndarray, trend_dir: str) -> tuple:
     if closes_1m is None or len(closes_1m) < MACD_SLOW + MACD_SIGNAL + 5:
         return 1, "MACD: insufficient data — partial credit"
 
-    macd = _calc_macd(closes_1m)
+    macd      = _calc_macd(closes_1m)
     hist      = macd["hist"]
     prev_hist = macd["prev_hist"]
     macd_line = macd["macd"]
     sig_line  = macd["signal"]
 
     if trend_dir == "UP":
-        crossed_up     = macd_line > sig_line
-        hist_growing   = hist > prev_hist and hist > 0
+        crossed_up   = macd_line > sig_line
+        hist_growing = hist > prev_hist and hist > 0
 
         if crossed_up and hist_growing:
             return 2, f"+2 MACD bullish (line > signal, hist growing @ {hist:.6f})"
@@ -373,8 +401,8 @@ def _check_macd_momentum(closes_1m: np.ndarray, trend_dir: str) -> tuple:
 # ─────────────────────────────────────────────────
 
 def calculate_confluence(
-    candles_primary: list,   # 5min candles (main feed from main.py)
-    candles_by_tf:   dict,   # {"3m": [...], "10m": [...], "1m": [...]}
+    candles_primary: list,
+    candles_by_tf:   dict,
     pair:            str = "",
 ) -> dict:
     """
@@ -382,13 +410,11 @@ def calculate_confluence(
 
     candles_primary → treated as 5min candles
     candles_by_tf   → must contain keys: "3m", "10m", "1m"
-                       (main.py must fetch and pass these)
 
     HARD RULE: 3/3 TF alignment required. If not met → SKIP immediately.
     Then score the rest. 10+/12 = TRADE. 8-9/12 = PHANTOM.
     """
     try:
-        # ── Extract candle arrays ──────────────────
         def to_closes(candles):
             if not candles:
                 return None
@@ -429,7 +455,6 @@ def calculate_confluence(
                 f"10m={tf_results.get('10m',{}).get('dir','?')})"
             )
 
-        # Translate trend direction to trade direction
         signal_direction = "CALL" if trend_dir == "UP" else "PUT"
 
         # ── COMPONENT 2: EMA Strength ──────────────
@@ -457,7 +482,6 @@ def calculate_confluence(
         logger.debug(f"   {brake_reason}")
         logger.debug(f"   {macd_reason}")
 
-        # ── Below phantom threshold ────────────────
         if total_score < PHANTOM_MIN_SCORE:
             return _skip(
                 f"Score {total_score}/12 below minimum {PHANTOM_MIN_SCORE} — skipping"
@@ -477,9 +501,9 @@ def calculate_confluence(
             ),
             "pattern": "TREND_FOLLOWING",
             "breakdown": {
-                "trend_dir":    trend_dir,
-                "aligned_tfs":  aligned_count,
-                "tf_results":   tf_results,
+                "trend_dir":   trend_dir,
+                "aligned_tfs": aligned_count,
+                "tf_results":  tf_results,
                 "components": {
                     "tf_alignment": {"score": tf_score,    "max": 4, "detail": str(tf_results)},
                     "ema_strength": {"score": ema_score,   "max": 2, "detail": ema_reason},
@@ -490,10 +514,8 @@ def calculate_confluence(
             },
         }
 
-        # ── Detect mode ────────────────────────────
         is_practice = os.getenv("TRADING_MODE", "PRACTICE").upper() == "PRACTICE"
 
-        # ── Score 8-9: phantom ─────────────────────
         if total_score < MIN_SCORE:
             if is_practice:
                 logger.info(
@@ -509,7 +531,6 @@ def calculate_confluence(
                 base_result["action"] = "PHANTOM"
             return base_result
 
-        # ── Score 10+: trade ───────────────────────
         base_result["action"] = "TRADE"
         return base_result
 
