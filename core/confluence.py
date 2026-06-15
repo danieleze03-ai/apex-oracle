@@ -8,11 +8,12 @@
 # This engine bets on price snapping BACK from extremes.
 #
 # SCORE GATES (AO-2.4):
-#   score >= 9  → TRADE  (real money, 75%+ confidence)
-#   score 7-8   → PHANTOM (shadow log only, no real money)
-#   score < 7   → SKIP
+#   score >= 9       → TRADE always (live + practice)
+#   score 7-8        → TRADE on practice, PHANTOM on live
+#   score < 7        → SKIP always
 # ─────────────────────────────────────────────────
 
+import os
 import numpy as np
 import pandas as pd
 from loguru import logger
@@ -121,18 +122,6 @@ def _score_direction(
     flip:      str,
     extreme:   str,
 ) -> tuple:
-    """
-    Score a direction for mean reversion.
-    Max = 12 points.
-
-    RSI extreme:         +3
-    RSI strong:          +2
-    BB band touch:       +3
-    BB band near mid:    +1
-    ROC fading:          +2
-    Direction flip:      +2
-    Local extreme:       +1
-    """
     score     = 0
     breakdown = {}
 
@@ -227,9 +216,15 @@ def calculate_confluence(
     """
     Mean Reversion Confluence Engine — AO-2.4
 
-    Returns action = "TRADE" only for score >= 9 (live money).
-    Returns action = "PHANTOM" for score 7-8 (shadow log only).
-    Returns action = "SKIP" for score < 7.
+    PRACTICE mode:
+      score 7-8  → TRADE (collect data on all signal levels)
+      score 9+   → TRADE
+
+    LIVE mode:
+      score 7-8  → PHANTOM (shadow only, no real money)
+      score 9+   → TRADE
+
+    score < 7    → SKIP always
     """
     try:
         if not candles_primary or len(candles_primary) < 30:
@@ -315,16 +310,28 @@ def calculate_confluence(
             },
         }
 
-        # ── Score 7-8: phantom only, no real trade ─
+        # ── Detect mode ────────────────────────────
+        is_practice = os.getenv("TRADING_MODE", "PRACTICE").upper() == "PRACTICE"
+
+        # ── Score 7-8 decision ─────────────────────
         if score < MIN_SCORE:
-            logger.info(
-                f"👻 {pair} | Score={score}/12 — PHANTOM only "
-                f"(need {MIN_SCORE}+ for live trade)"
-            )
-            base_result["action"] = "PHANTOM"
+            if is_practice:
+                # Practice: trade it, collect the data
+                logger.info(
+                    f"📊 PRACTICE TRADE: {pair} Score={score}/12 | "
+                    f"(would be phantom on LIVE)"
+                )
+                base_result["action"] = "TRADE"
+            else:
+                # Live: shadow only, protect real money
+                logger.info(
+                    f"👻 PHANTOM ONLY: {pair} Score={score}/12 | "
+                    f"need {MIN_SCORE}+ for live trade"
+                )
+                base_result["action"] = "PHANTOM"
             return base_result
 
-        # ── Score 9+: approve for live trade ──────
+        # ── Score 9+: trade in both modes ─────────
         base_result["action"] = "TRADE"
         return base_result
 
