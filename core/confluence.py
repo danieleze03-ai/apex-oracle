@@ -1,45 +1,83 @@
-# ⚡ APEX ORACLE — AO-2.4
-# Confluence Engine — REBUILT
-# Strategy: Mean Reversion Scoring for Synthetic Indices
+# ⚡ APEX ORACLE — AO-2.5
+# Confluence Engine — TREND FOLLOWING REBUILD
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
 #
-# KEY INSIGHT: Deriv synthetic indices OSCILLATE. They do NOT trend.
-# This engine bets on price snapping BACK from extremes.
+# STRATEGY CHANGE: Mean Reversion → Trend Following
 #
-# SCORE GATES (AO-2.4):
-#   score >= 9       → TRADE always (live + practice)
-#   score 7-8        → TRADE on practice, PHANTOM on live
-#   score < 7        → SKIP always
+# KEY INSIGHT:
+# V10/V25 are random walks that produce SHORT STREAKS
+# by chance. We don't predict long-term direction.
+# We only trade when ALL 3 timeframes show a detectable
+# lean — and only enter on a pullback within that trend.
+#
+# SCORING (out of 12):
+#   [4pts] TF Alignment  — 3/5/10min EMA8/21 all agree
+#                          1pt per TF + 1 bonus if all 3
+#   [2pts] EMA Strength  — avg diff size above threshold
+#   [3pts] Pullback-Resume — 1min RSI dipped then turned
+#   [1pt]  RSI Brake     — RSI NOT already extreme on entry
+#   [2pts] MACD Momentum — MACD turning in trend direction
+#
+# GATES:
+#   score >= 10  → TRADE (live + practice)
+#   score  8-9   → PHANTOM (shadow log, no real money)
+#   score  < 8   → SKIP
+#
+# HARD RULE:
+#   If 3/3 TFs not aligned → NO TRADE, score irrelevant
 # ─────────────────────────────────────────────────
 
 import os
 import numpy as np
-import pandas as pd
 from loguru import logger
 import config
 
 # ─────────────────────────────────────────────────
-# SCORING THRESHOLDS
+# CONSTANTS
 # ─────────────────────────────────────────────────
-
-MIN_SCORE           = config.MIN_SCORE           # 9 — live trade
-PHANTOM_MIN_SCORE   = config.PHANTOM_MIN_SCORE   # 7 — shadow only
-RSI_EXTREME_HIGH    = config.RSI_EXTREME_HIGH    # 78
-RSI_STRONG_HIGH     = config.RSI_STRONG_HIGH     # 72
-RSI_EXTREME_LOW     = config.RSI_EXTREME_LOW     # 22
-RSI_STRONG_LOW      = config.RSI_STRONG_LOW      # 28
-BB_TOUCH_THRESHOLD  = 0.98
-ROC_PERIOD          = 5
-ROC_FADE_THRESHOLD  = 0.0
-COOLDOWN_PER_PAIR   = 120
+MIN_SCORE         = config.MIN_SCORE            # 10
+PHANTOM_MIN_SCORE = config.PHANTOM_MIN_SCORE    # 8
+EMA_FAST          = config.EMA_FAST             # 8
+EMA_SLOW          = config.EMA_SLOW             # 21
+EMA_DIFF_THRESH   = config.EMA_DIFF_THRESHOLD   # 0.0007
+RSI_PERIOD        = config.RSI_PERIOD           # 14
+RSI_BRAKE_HIGH    = config.RSI_BRAKE_HIGH       # 70
+RSI_BRAKE_LOW     = config.RSI_BRAKE_LOW        # 30
+RSI_PULLBACK_LOW  = config.RSI_PULLBACK_LOW     # 40
+RSI_PULLBACK_HIGH = config.RSI_PULLBACK_HIGH    # 55
+MACD_FAST         = config.MACD_FAST            # 12
+MACD_SLOW         = config.MACD_SLOW            # 26
+MACD_SIGNAL       = config.MACD_SIGNAL          # 9
 
 
 # ─────────────────────────────────────────────────
 # INDICATOR CALCULATORS
 # ─────────────────────────────────────────────────
 
+def _ema(closes: np.ndarray, period: int) -> float:
+    """Exponential Moving Average — returns last value."""
+    if len(closes) < period:
+        return float(closes[-1])
+    k   = 2.0 / (period + 1)
+    ema = float(closes[0])
+    for price in closes[1:]:
+        ema = float(price) * k + ema * (1 - k)
+    return ema
+
+
+def _ema_series(closes: np.ndarray, period: int) -> np.ndarray:
+    """Full EMA series — needed for MACD."""
+    k      = 2.0 / (period + 1)
+    result = np.zeros(len(closes))
+    result[0] = closes[0]
+    for i in range(1, len(closes)):
+        result[i] = closes[i] * k + result[i - 1] * (1 - k)
+    return result
+
+
 def _calc_rsi(closes: np.ndarray, period: int = 14) -> float:
+    """Standard RSI."""
     if len(closes) < period + 1:
         return 50.0
     deltas   = np.diff(closes)
@@ -50,158 +88,284 @@ def _calc_rsi(closes: np.ndarray, period: int = 14) -> float:
     if avg_loss == 0:
         return 100.0
     rs  = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return round(float(rsi), 2)
+    return round(float(100 - (100 / (1 + rs))), 2)
 
 
-def _calc_bb(closes: np.ndarray, period: int = 20, std_dev: float = 2.0) -> dict:
-    if len(closes) < period:
-        return {"upper": 0, "middle": 0, "lower": 0}
-    window = closes[-period:]
-    middle = float(np.mean(window))
-    std    = float(np.std(window))
+def _calc_macd(closes: np.ndarray) -> dict:
+    """MACD line, signal line, histogram."""
+    if len(closes) < MACD_SLOW + MACD_SIGNAL:
+        return {"macd": 0.0, "signal": 0.0, "hist": 0.0, "prev_hist": 0.0}
+    fast_ema   = _ema_series(closes, MACD_FAST)
+    slow_ema   = _ema_series(closes, MACD_SLOW)
+    macd_line  = fast_ema - slow_ema
+    signal_line = _ema_series(macd_line, MACD_SIGNAL)
+    hist        = macd_line - signal_line
     return {
-        "upper":  round(middle + std_dev * std, 6),
-        "middle": round(middle, 6),
-        "lower":  round(middle - std_dev * std, 6),
+        "macd":      round(float(macd_line[-1]), 6),
+        "signal":    round(float(signal_line[-1]), 6),
+        "hist":      round(float(hist[-1]), 6),
+        "prev_hist": round(float(hist[-2]), 6) if len(hist) > 1 else 0.0,
     }
 
 
-def _calc_roc(closes: np.ndarray, period: int = 5) -> float:
-    if len(closes) < period + 1:
-        return 0.0
-    prev = closes[-(period + 1)]
-    curr = closes[-1]
-    if prev == 0:
-        return 0.0
-    return round(float((curr - prev) / prev), 6)
-
-
-def _detect_direction_flip(closes: np.ndarray, lookback: int = 3) -> str:
-    if len(closes) < lookback + 1:
-        return "NONE"
-    recent      = closes[-(lookback + 1):]
-    was_falling = recent[-2] < recent[-3] if len(recent) >= 3 else False
-    now_rising  = recent[-1] > recent[-2]
-    if was_falling and now_rising:
-        return "UP_FLIP"
-    was_rising  = recent[-2] > recent[-3] if len(recent) >= 3 else False
-    now_falling = recent[-1] < recent[-2]
-    if was_rising and now_falling:
-        return "DOWN_FLIP"
-    return "NONE"
-
-
-def _is_local_extreme(closes: np.ndarray, lookback: int = 10) -> str:
-    if len(closes) < lookback:
-        return "NONE"
-    window  = closes[-lookback:]
-    current = closes[-1]
-    high    = np.max(window)
-    low     = np.min(window)
-    spread  = high - low
-    if spread == 0:
-        return "NONE"
-    if current >= high - (spread * 0.15):
-        return "HIGH"
-    if current <= low + (spread * 0.15):
-        return "LOW"
-    return "NONE"
+def _rsi_series(closes: np.ndarray, period: int = 14) -> np.ndarray:
+    """Full RSI series — needed to detect pullback dip."""
+    if len(closes) < period + 2:
+        return np.full(len(closes), 50.0)
+    result = np.full(len(closes), 50.0)
+    deltas = np.diff(closes)
+    for i in range(period, len(closes)):
+        window_gains  = np.where(deltas[i-period:i] > 0, deltas[i-period:i], 0.0)
+        window_losses = np.where(deltas[i-period:i] < 0, -deltas[i-period:i], 0.0)
+        avg_gain = np.mean(window_gains)
+        avg_loss = np.mean(window_losses)
+        if avg_loss == 0:
+            result[i] = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            result[i] = 100 - (100 / (1 + rs))
+    return result
 
 
 # ─────────────────────────────────────────────────
-# CORE SCORING ENGINE
+# COMPONENT 1: TF ALIGNMENT (0-4 pts)
 # ─────────────────────────────────────────────────
 
-def _score_direction(
-    direction: str,
-    rsi:       float,
-    bb:        dict,
-    price:     float,
-    roc:       float,
-    flip:      str,
-    extreme:   str,
+def _check_tf_alignment(
+    closes_3m:  np.ndarray,
+    closes_5m:  np.ndarray,
+    closes_10m: np.ndarray,
 ) -> tuple:
-    score     = 0
-    breakdown = {}
+    """
+    For each TF compute EMA8 vs EMA21.
+    Count as UP/DOWN only if |diff/price| >= EMA_DIFF_THRESH (0.07%).
+    Below threshold = NEUTRAL.
 
-    if direction == "CALL":
-        if rsi <= RSI_EXTREME_LOW:
-            score += 3
-            breakdown["rsi"] = f"+3 (RSI={rsi} extreme oversold)"
-        elif rsi <= RSI_STRONG_LOW:
-            score += 2
-            breakdown["rsi"] = f"+2 (RSI={rsi} oversold)"
+    Points:
+      1pt per TF aligned in same direction (max 3)
+      +1 bonus if ALL 3 agree (must have all 3)
+
+    Returns: (direction, score, aligned_count, diffs, details)
+    """
+    results = {}
+    for label, closes in [("3m", closes_3m), ("5m", closes_5m), ("10m", closes_10m)]:
+        if closes is None or len(closes) < EMA_SLOW + 5:
+            results[label] = {"dir": "NEUTRAL", "diff_pct": 0.0}
+            continue
+
+        fast = _ema(closes, EMA_FAST)
+        slow = _ema(closes, EMA_SLOW)
+        price = float(closes[-1])
+        if price == 0:
+            results[label] = {"dir": "NEUTRAL", "diff_pct": 0.0}
+            continue
+
+        diff_pct = (fast - slow) / price  # signed
+
+        if diff_pct >= EMA_DIFF_THRESH:
+            direction = "UP"
+        elif diff_pct <= -EMA_DIFF_THRESH:
+            direction = "DOWN"
         else:
-            breakdown["rsi"] = f"0 (RSI={rsi} not oversold)"
+            direction = "NEUTRAL"
 
-        if bb["lower"] > 0:
-            if price <= bb["lower"] * (2 - BB_TOUCH_THRESHOLD):
-                score += 3
-                breakdown["bb"] = "+3 (price at lower BB)"
-            elif price <= bb["middle"]:
-                score += 1
-                breakdown["bb"] = "+1 (price below BB midline)"
-            else:
-                breakdown["bb"] = "0 (price above BB midline)"
+        results[label] = {
+            "dir":      direction,
+            "diff_pct": round(diff_pct * 100, 4),
+            "fast":     round(fast, 4),
+            "slow":     round(slow, 4),
+        }
 
-        if roc > ROC_FADE_THRESHOLD:
-            score += 2
-            breakdown["roc"] = f"+2 (ROC={roc:.4f} building upward)"
+    dirs = [v["dir"] for v in results.values()]
+
+    up_count   = dirs.count("UP")
+    down_count = dirs.count("DOWN")
+
+    if up_count >= 3:
+        agreed_dir = "UP"
+        score      = 3 + 1  # 3 TFs + bonus
+        aligned    = 3
+    elif down_count >= 3:
+        agreed_dir = "DOWN"
+        score      = 3 + 1
+        aligned    = 3
+    elif up_count == 2:
+        agreed_dir = "UP"
+        score      = 2
+        aligned    = 2
+    elif down_count == 2:
+        agreed_dir = "DOWN"
+        score      = 2
+        aligned    = 2
+    else:
+        agreed_dir = "NEUTRAL"
+        score      = 0
+        aligned    = 0
+
+    return agreed_dir, score, aligned, results
+
+
+# ─────────────────────────────────────────────────
+# COMPONENT 2: EMA STRENGTH (0-2 pts)
+# ─────────────────────────────────────────────────
+
+def _check_ema_strength(tf_results: dict, trend_dir: str) -> tuple:
+    """
+    How strong is the trend? Avg absolute diff across aligned TFs.
+    > 2× threshold → 2pts
+    > 1× threshold → 1pt
+    """
+    diffs = []
+    for v in tf_results.values():
+        if v["dir"] != "NEUTRAL" and v["dir"] == ("UP" if trend_dir == "UP" else "DOWN"):
+            diffs.append(abs(v["diff_pct"]) / 100)  # back to decimal
+
+    if not diffs:
+        return 0, "No aligned TFs for strength check"
+
+    avg_diff = sum(diffs) / len(diffs)
+    thresh   = EMA_DIFF_THRESH
+
+    if avg_diff >= thresh * 2:
+        return 2, f"+2 EMA strength (avg diff={avg_diff*100:.4f}% ≥ {thresh*200:.3f}%)"
+    elif avg_diff >= thresh:
+        return 1, f"+1 EMA strength (avg diff={avg_diff*100:.4f}% ≥ {thresh*100:.3f}%)"
+    else:
+        return 0, f"0 EMA strength (avg diff={avg_diff*100:.4f}% below threshold)"
+
+
+# ─────────────────────────────────────────────────
+# COMPONENT 3: PULLBACK-RESUME (0-3 pts)
+# ─────────────────────────────────────────────────
+
+def _check_pullback_resume(closes_1m: np.ndarray, trend_dir: str) -> tuple:
+    """
+    Checks if 1min RSI dipped into pullback zone then turned back.
+    
+    For CALL (uptrend):
+      RSI dipped to 40-55 range in recent candles, now rising back up.
+    For PUT (downtrend):
+      RSI rose to 45-60 range in recent candles, now falling back down.
+
+    3pts = clean pullback + resume confirmed
+    2pts = partial (dip detected OR resume detected, not both)
+    1pt  = minor lean in right direction
+    0pts = no pullback evidence
+    """
+    if closes_1m is None or len(closes_1m) < 20:
+        return 1, "1M pullback: insufficient data — partial credit"
+
+    rsi_arr = _rsi_series(closes_1m, RSI_PERIOD)
+
+    # Look at last 8 RSI values for the dip
+    lookback = min(8, len(rsi_arr) - 1)
+    recent_rsi  = rsi_arr[-lookback:]
+    current_rsi = float(rsi_arr[-1])
+    prev_rsi    = float(rsi_arr[-2]) if len(rsi_arr) > 1 else current_rsi
+
+    if trend_dir == "UP":
+        # Dip: RSI touched between 40-55
+        dip_detected = any(RSI_PULLBACK_LOW <= r <= RSI_PULLBACK_HIGH for r in recent_rsi)
+        # Resume: RSI now turning UP
+        resume = current_rsi > prev_rsi and current_rsi >= RSI_PULLBACK_LOW
+
+        if dip_detected and resume:
+            return 3, f"+3 Pullback-resume (RSI dipped, now rising @ {current_rsi:.1f})"
+        elif dip_detected:
+            return 2, f"+2 Pullback detected (RSI was in zone, not resumed yet @ {current_rsi:.1f})"
+        elif resume:
+            return 1, f"+1 RSI rising ({current_rsi:.1f}) but no clear dip zone"
         else:
-            breakdown["roc"] = f"0 (ROC={roc:.4f} not building)"
+            return 0, f"0 No pullback-resume (RSI={current_rsi:.1f})"
 
-        if flip == "UP_FLIP":
-            score += 2
-            breakdown["flip"] = "+2 (price just reversed UP)"
+    else:  # DOWN
+        # Rise: RSI touched between 45-60 (mirror of pullback zone)
+        rise_detected = any(RSI_PULLBACK_LOW <= r <= RSI_PULLBACK_HIGH for r in recent_rsi)
+        # Resume: RSI now turning DOWN
+        resume = current_rsi < prev_rsi and current_rsi <= RSI_PULLBACK_HIGH
+
+        if rise_detected and resume:
+            return 3, f"+3 Pullback-resume (RSI rose, now falling @ {current_rsi:.1f})"
+        elif rise_detected:
+            return 2, f"+2 Pullback detected (RSI was in zone, not resumed yet @ {current_rsi:.1f})"
+        elif resume:
+            return 1, f"+1 RSI falling ({current_rsi:.1f}) but no clear rise zone"
         else:
-            breakdown["flip"] = f"0 (no up flip, flip={flip})"
+            return 0, f"0 No pullback-resume (RSI={current_rsi:.1f})"
 
-        if extreme == "LOW":
-            score += 1
-            breakdown["extreme"] = "+1 (at local price low)"
+
+# ─────────────────────────────────────────────────
+# COMPONENT 4: RSI BRAKE (0-1 pt)
+# ─────────────────────────────────────────────────
+
+def _check_rsi_brake(closes_1m: np.ndarray, trend_dir: str) -> tuple:
+    """
+    RSI is now a BRAKE — it filters OUT entries if already extreme.
+    We want to enter DURING the move, not at the end of it.
+
+    CALL: RSI < 70 on 1min → safe (1pt). RSI >= 70 → too late (0pt)
+    PUT:  RSI > 30 on 1min → safe (1pt). RSI <= 30 → too late (0pt)
+    """
+    if closes_1m is None or len(closes_1m) < 15:
+        return 1, "RSI brake: insufficient data — default pass"
+
+    rsi = _calc_rsi(closes_1m, RSI_PERIOD)
+
+    if trend_dir == "UP":
+        if rsi < RSI_BRAKE_HIGH:
+            return 1, f"+1 RSI brake OK (RSI={rsi:.1f} < {RSI_BRAKE_HIGH} — not overbought)"
         else:
-            breakdown["extreme"] = "0"
+            return 0, f"0 RSI brake BLOCKED (RSI={rsi:.1f} >= {RSI_BRAKE_HIGH} — too late, overbought)"
 
-    elif direction == "PUT":
-        if rsi >= RSI_EXTREME_HIGH:
-            score += 3
-            breakdown["rsi"] = f"+3 (RSI={rsi} extreme overbought)"
-        elif rsi >= RSI_STRONG_HIGH:
-            score += 2
-            breakdown["rsi"] = f"+2 (RSI={rsi} overbought)"
+    else:  # DOWN
+        if rsi > RSI_BRAKE_LOW:
+            return 1, f"+1 RSI brake OK (RSI={rsi:.1f} > {RSI_BRAKE_LOW} — not oversold)"
         else:
-            breakdown["rsi"] = f"0 (RSI={rsi} not overbought)"
+            return 0, f"0 RSI brake BLOCKED (RSI={rsi:.1f} <= {RSI_BRAKE_LOW} — too late, oversold)"
 
-        if bb["upper"] > 0:
-            if price >= bb["upper"] * BB_TOUCH_THRESHOLD:
-                score += 3
-                breakdown["bb"] = "+3 (price at upper BB)"
-            elif price >= bb["middle"]:
-                score += 1
-                breakdown["bb"] = "+1 (price above BB midline)"
-            else:
-                breakdown["bb"] = "0 (price below BB midline)"
 
-        if roc < ROC_FADE_THRESHOLD:
-            score += 2
-            breakdown["roc"] = f"+2 (ROC={roc:.4f} fading downward)"
+# ─────────────────────────────────────────────────
+# COMPONENT 5: MACD MOMENTUM (0-2 pts)
+# ─────────────────────────────────────────────────
+
+def _check_macd_momentum(closes_1m: np.ndarray, trend_dir: str) -> tuple:
+    """
+    MACD on 1min confirms momentum in trend direction.
+
+    2pts = MACD line crossed signal in trend direction AND histogram growing
+    1pt  = histogram turning in trend direction (early signal)
+    0pts = MACD against trend direction
+    """
+    if closes_1m is None or len(closes_1m) < MACD_SLOW + MACD_SIGNAL + 5:
+        return 1, "MACD: insufficient data — partial credit"
+
+    macd = _calc_macd(closes_1m)
+    hist      = macd["hist"]
+    prev_hist = macd["prev_hist"]
+    macd_line = macd["macd"]
+    sig_line  = macd["signal"]
+
+    if trend_dir == "UP":
+        crossed_up     = macd_line > sig_line
+        hist_growing   = hist > prev_hist and hist > 0
+
+        if crossed_up and hist_growing:
+            return 2, f"+2 MACD bullish (line > signal, hist growing @ {hist:.6f})"
+        elif hist > prev_hist:
+            return 1, f"+1 MACD histogram turning up ({prev_hist:.6f} → {hist:.6f})"
         else:
-            breakdown["roc"] = f"0 (ROC={roc:.4f} not fading)"
+            return 0, f"0 MACD not bullish (hist={hist:.6f}, prev={prev_hist:.6f})"
 
-        if flip == "DOWN_FLIP":
-            score += 2
-            breakdown["flip"] = "+2 (price just reversed DOWN)"
+    else:  # DOWN
+        crossed_down   = macd_line < sig_line
+        hist_shrinking = hist < prev_hist and hist < 0
+
+        if crossed_down and hist_shrinking:
+            return 2, f"+2 MACD bearish (line < signal, hist falling @ {hist:.6f})"
+        elif hist < prev_hist:
+            return 1, f"+1 MACD histogram turning down ({prev_hist:.6f} → {hist:.6f})"
         else:
-            breakdown["flip"] = f"0 (no down flip, flip={flip})"
-
-        if extreme == "HIGH":
-            score += 1
-            breakdown["extreme"] = "+1 (at local price high)"
-        else:
-            breakdown["extreme"] = "0"
-
-    return score, breakdown
+            return 0, f"0 MACD not bearish (hist={hist:.6f}, prev={prev_hist:.6f})"
 
 
 # ─────────────────────────────────────────────────
@@ -209,129 +373,143 @@ def _score_direction(
 # ─────────────────────────────────────────────────
 
 def calculate_confluence(
-    candles_primary: list,
-    candles_by_tf:   dict,
+    candles_primary: list,   # 5min candles (main feed from main.py)
+    candles_by_tf:   dict,   # {"3m": [...], "10m": [...], "1m": [...]}
     pair:            str = "",
 ) -> dict:
     """
-    Mean Reversion Confluence Engine — AO-2.4
+    AO-2.5 Trend-Following Confluence Engine.
 
-    PRACTICE mode:
-      score 7-8  → TRADE (collect data on all signal levels)
-      score 9+   → TRADE
+    candles_primary → treated as 5min candles
+    candles_by_tf   → must contain keys: "3m", "10m", "1m"
+                       (main.py must fetch and pass these)
 
-    LIVE mode:
-      score 7-8  → PHANTOM (shadow only, no real money)
-      score 9+   → TRADE
-
-    score < 7    → SKIP always
+    HARD RULE: 3/3 TF alignment required. If not met → SKIP immediately.
+    Then score the rest. 10+/12 = TRADE. 8-9/12 = PHANTOM.
     """
     try:
-        if not candles_primary or len(candles_primary) < 30:
-            return _skip("Not enough candle data (need 30+)")
+        # ── Extract candle arrays ──────────────────
+        def to_closes(candles):
+            if not candles:
+                return None
+            arr = np.array([
+                float(c.get("close", c.get("Close", 0)))
+                for c in candles
+                if c.get("close", c.get("Close", 0)) != 0
+            ])
+            return arr if len(arr) >= 5 else None
 
-        closes = np.array([
-            float(c.get("close", c.get("Close", 0)))
-            for c in candles_primary
-            if c.get("close", c.get("Close", 0)) != 0
-        ])
+        closes_5m  = to_closes(candles_primary)
+        closes_3m  = to_closes(candles_by_tf.get("3m"))
+        closes_10m = to_closes(candles_by_tf.get("10m"))
+        closes_1m  = to_closes(candles_by_tf.get("1m"))
 
-        if len(closes) < 25:
-            return _skip("Not enough valid close prices")
+        if closes_5m is None or len(closes_5m) < 25:
+            return _skip("Not enough 5min candle data")
 
-        price   = float(closes[-1])
-        rsi     = _calc_rsi(closes, period=14)
-        bb      = _calc_bb(closes, period=20, std_dev=2.0)
-        roc     = _calc_roc(closes, period=ROC_PERIOD)
-        flip    = _detect_direction_flip(closes, lookback=3)
-        extreme = _is_local_extreme(closes, lookback=15)
-
-        call_score, call_breakdown = _score_direction(
-            "CALL", rsi, bb, price, roc, flip, extreme
+        # ── COMPONENT 1: TF Alignment ──────────────
+        trend_dir, tf_score, aligned_count, tf_results = _check_tf_alignment(
+            closes_3m, closes_5m, closes_10m
         )
-        put_score, put_breakdown = _score_direction(
-            "PUT", rsi, bb, price, roc, flip, extreme
-        )
-
-        if call_score > put_score:
-            direction = "CALL"
-            score     = call_score
-            breakdown = call_breakdown
-        elif put_score > call_score:
-            direction = "PUT"
-            score     = put_score
-            breakdown = put_breakdown
-        else:
-            return _skip("No clear directional edge (tied scores)")
-
-        opposing = put_score if direction == "CALL" else call_score
-        if (score - opposing) < 2:
-            return _skip(
-                f"Score margin too small ({direction}={score} vs opp={opposing})"
-            )
-
-        # ── Below phantom threshold — hard skip ────
-        if score < PHANTOM_MIN_SCORE:
-            return _skip(f"Score {score}/12 below minimum {PHANTOM_MIN_SCORE} — skipping")
 
         logger.info(
-            f"🎯 {pair} | {direction} | Score={score}/12 | "
-            f"RSI={rsi} | Flip={flip} | Extreme={extreme}"
+            f"📐 {pair} TF Alignment | Dir={trend_dir} | "
+            f"Aligned={aligned_count}/3 | Score={tf_score}/4 | "
+            f"3m={tf_results.get('3m', {}).get('dir','?')}({tf_results.get('3m', {}).get('diff_pct','?')}%) "
+            f"5m={tf_results.get('5m', {}).get('dir','?')}({tf_results.get('5m', {}).get('diff_pct','?')}%) "
+            f"10m={tf_results.get('10m', {}).get('dir','?')}({tf_results.get('10m', {}).get('diff_pct','?')}%)"
         )
 
-        confidence_pct = round((score / 12) * 100, 1)
+        # ── HARD RULE: 3/3 required ────────────────
+        if aligned_count < 3 or trend_dir == "NEUTRAL":
+            return _skip(
+                f"TF alignment FAILED — only {aligned_count}/3 agree "
+                f"(3m={tf_results.get('3m',{}).get('dir','?')} "
+                f"5m={tf_results.get('5m',{}).get('dir','?')} "
+                f"10m={tf_results.get('10m',{}).get('dir','?')})"
+            )
+
+        # Translate trend direction to trade direction
+        signal_direction = "CALL" if trend_dir == "UP" else "PUT"
+
+        # ── COMPONENT 2: EMA Strength ──────────────
+        ema_score, ema_reason = _check_ema_strength(tf_results, trend_dir)
+
+        # ── COMPONENT 3: Pullback-Resume ──────────
+        pb_score, pb_reason = _check_pullback_resume(closes_1m, trend_dir)
+
+        # ── COMPONENT 4: RSI Brake ─────────────────
+        brake_score, brake_reason = _check_rsi_brake(closes_1m, trend_dir)
+
+        # ── COMPONENT 5: MACD Momentum ────────────
+        macd_score, macd_reason = _check_macd_momentum(closes_1m, trend_dir)
+
+        # ── Total Score ────────────────────────────
+        total_score = tf_score + ema_score + pb_score + brake_score + macd_score
+
+        logger.info(
+            f"🎯 {pair} | {signal_direction} | Score={total_score}/12 | "
+            f"TF={tf_score}/4 | EMA={ema_score}/2 | "
+            f"PB={pb_score}/3 | Brake={brake_score}/1 | MACD={macd_score}/2"
+        )
+        logger.debug(f"   {ema_reason}")
+        logger.debug(f"   {pb_reason}")
+        logger.debug(f"   {brake_reason}")
+        logger.debug(f"   {macd_reason}")
+
+        # ── Below phantom threshold ────────────────
+        if total_score < PHANTOM_MIN_SCORE:
+            return _skip(
+                f"Score {total_score}/12 below minimum {PHANTOM_MIN_SCORE} — skipping"
+            )
+
+        confidence_pct = round((total_score / 12) * 100, 1)
 
         base_result = {
-            "direction":  direction,
+            "direction":  signal_direction,
             "confidence": confidence_pct,
-            "score":      score,
+            "score":      total_score,
             "stake_size": "FULL",
-            "reason":     (
-                f"{direction} signal | Score: {score}/12 | "
-                f"RSI={rsi} | ROC={roc:.4f} | Flip={flip}"
+            "reason": (
+                f"{signal_direction} | Score: {total_score}/12 | "
+                f"TF={tf_score}/4 EMA={ema_score}/2 "
+                f"PB={pb_score}/3 Brake={brake_score}/1 MACD={macd_score}/2"
             ),
-            "pattern":    "MEAN_REVERSION",
+            "pattern": "TREND_FOLLOWING",
             "breakdown": {
-                "call_score": call_score,
-                "put_score":  put_score,
-                "indicators": {
-                    "agreements": score,
-                    "details": {
-                        "rsi":     {"value": rsi,     "signal": breakdown.get("rsi", "")},
-                        "bb":      {"value": price,   "signal": breakdown.get("bb", "")},
-                        "roc":     {"value": roc,     "signal": breakdown.get("roc", "")},
-                        "flip":    {"value": flip,    "signal": breakdown.get("flip", "")},
-                        "extreme": {"value": extreme, "signal": breakdown.get("extreme", "")},
-                    }
+                "trend_dir":    trend_dir,
+                "aligned_tfs":  aligned_count,
+                "tf_results":   tf_results,
+                "components": {
+                    "tf_alignment": {"score": tf_score,    "max": 4, "detail": str(tf_results)},
+                    "ema_strength": {"score": ema_score,   "max": 2, "detail": ema_reason},
+                    "pullback":     {"score": pb_score,    "max": 3, "detail": pb_reason},
+                    "rsi_brake":    {"score": brake_score, "max": 1, "detail": brake_reason},
+                    "macd":         {"score": macd_score,  "max": 2, "detail": macd_reason},
                 },
-                "pattern":    {"strength": score},
-                "volatility": {"level": "MEDIUM"},
-                "timeframes": {"agreements": 1, "total": 1},
             },
         }
 
         # ── Detect mode ────────────────────────────
         is_practice = os.getenv("TRADING_MODE", "PRACTICE").upper() == "PRACTICE"
 
-        # ── Score 7-8 decision ─────────────────────
-        if score < MIN_SCORE:
+        # ── Score 8-9: phantom ─────────────────────
+        if total_score < MIN_SCORE:
             if is_practice:
-                # Practice: trade it, collect the data
                 logger.info(
-                    f"📊 PRACTICE TRADE: {pair} Score={score}/12 | "
+                    f"📊 PRACTICE TRADE: {pair} Score={total_score}/12 "
                     f"(would be phantom on LIVE)"
                 )
                 base_result["action"] = "TRADE"
             else:
-                # Live: shadow only, protect real money
                 logger.info(
-                    f"👻 PHANTOM ONLY: {pair} Score={score}/12 | "
-                    f"need {MIN_SCORE}+ for live trade"
+                    f"👻 PHANTOM ONLY: {pair} Score={total_score}/12 "
+                    f"— need {MIN_SCORE}+ for live"
                 )
                 base_result["action"] = "PHANTOM"
             return base_result
 
-        # ── Score 9+: trade in both modes ─────────
+        # ── Score 10+: trade ───────────────────────
         base_result["action"] = "TRADE"
         return base_result
 

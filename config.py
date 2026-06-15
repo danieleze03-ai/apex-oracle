@@ -1,6 +1,15 @@
-# ⚡ APEX ORACLE — AO-2.0
-# Central Configuration — REBUILT
+# ⚡ APEX ORACLE — AO-2.5
+# Central Configuration — TREND FOLLOWING REBUILD
 # "We Don't Predict. We Know."
+# ─────────────────────────────────────────────────
+#
+# CHANGES FROM AO-2.4:
+# - Strategy switched: MEAN REVERSION → TREND FOLLOWING
+# - New EMA diff threshold: 0.07% minimum to count as trend
+# - Score gate raised: 10+/12 = live, 8-9 = phantom
+# - New scoring system (12pts) built for trend-following
+# - RSI now a BRAKE (filter out), not a trigger
+# - MACD added as momentum confirmation
 # ─────────────────────────────────────────────────
 
 import os
@@ -13,7 +22,7 @@ load_dotenv()
 # IDENTITY
 # ─────────────────────────────────────────────────
 BOT_NAME = "APEX ORACLE"
-VERSION  = "AO-2.4"
+VERSION  = "AO-2.5"
 SYMBOL   = "⚡"
 MOTTO    = "We Don't Predict. We Know."
 
@@ -24,7 +33,7 @@ DERIV_API_TOKEN = os.getenv("DERIV_API_TOKEN")
 TRADE_MODE      = os.getenv("TRADING_MODE", "PRACTICE")
 
 # ─────────────────────────────────────────────────
-# GROQ AI — DISABLED in AO-2.0
+# GROQ AI — DISABLED
 # ─────────────────────────────────────────────────
 GROQ_API_KEY    = os.getenv("GROQ_API_KEY")
 GROQ_MODEL      = "llama3-70b-8192"
@@ -43,66 +52,82 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # ─────────────────────────────────────────────────
-# TRADING PAIRS — AO-2.0 STRICT MODE
-# V25 and V10 ONLY — most controlled oscillation
+# TRADING PAIRS
 # ─────────────────────────────────────────────────
 SYNTHETIC_PAIRS  = ["V25", "V10"]
 MAX_ACTIVE_PAIRS = 1
 PRIMARY_PAIRS    = ["V25", "V10"]
 SECONDARY_PAIRS  = []
-V75_MIN_SCORE    = 999    # Effectively disabled
+V75_MIN_SCORE    = 999  # Disabled
 
 # ─────────────────────────────────────────────────
-# TIMEFRAMES
+# TIMEFRAMES — AO-2.5 TREND FOLLOWING
 # ─────────────────────────────────────────────────
 TIMEFRAMES = {
-    "entry":   1,
-    "primary": 5,
+    "entry":    1,   # 1min  — pullback-resume trigger
+    "fast":     3,   # 3min  — trend check TF1
+    "mid":      5,   # 5min  — trend check TF2
+    "slow":     10,  # 10min — trend check TF3
 }
 
+# Candles to fetch per timeframe
+CANDLES_TREND_TF  = 60   # enough for EMA8/21 + buffer on 3/5/10min
+CANDLES_ENTRY_TF  = 40   # enough for RSI + MACD on 1min
+
 # ─────────────────────────────────────────────────
-# EXPIRY — 3min default, 5min high confidence
+# EXPIRY
 # ─────────────────────────────────────────────────
 EXPIRY_DEFAULT   = 3
 EXPIRY_HIGH_CONF = 5
 EXPIRY_SECONDS   = 180
 
 # ─────────────────────────────────────────────────
-# SIGNAL ENGINE — AO-2.4 SCORING
-#
-# MIN_SCORE = 9  → fires a REAL trade (75%+)
-# PHANTOM_MIN_SCORE = 7 → shadow-logged only, no money
-#
-# This means:
-#   score 7-8  → phantom trade logged, no real trade
-#   score 9+   → real trade fires
-#   score < 7  → skipped entirely
+# TREND-FOLLOWING ENGINE — AO-2.5
 # ─────────────────────────────────────────────────
-MIN_SCORE         = 9    # Live trade threshold — 75%+
-PHANTOM_MIN_SCORE = 7    # Shadow log threshold — data collection only
 
+# EMA settings for trend detection
+EMA_FAST   = 8
+EMA_SLOW   = 21
+
+# Minimum EMA diff (as % of price) to count as a real trend
+# Below this = NEUTRAL, direction ignored
+EMA_DIFF_THRESHOLD = 0.0007   # 0.07%
+
+# Score gates
+MIN_SCORE         = 10   # 10+/12 → live trade
+PHANTOM_MIN_SCORE = 8    # 8-9/12 → phantom (shadow log only)
+
+# RSI brake thresholds — FILTER OUT if already extreme on entry TF
 RSI_PERIOD       = 14
+RSI_BRAKE_HIGH   = 70    # In uptrend: skip if RSI already above this
+RSI_BRAKE_LOW    = 30    # In downtrend: skip if RSI already below this
+
+# Pullback zone — where RSI should DIP TO before resuming (uptrend entry)
+RSI_PULLBACK_LOW  = 40   # RSI dip low end in uptrend
+RSI_PULLBACK_HIGH = 55   # RSI dip high end in uptrend (mirror for downtrend)
+
+# MACD settings
+MACD_FAST   = 12
+MACD_SLOW   = 26
+MACD_SIGNAL = 9
+
+# Backward compat — kept so other modules don't break
 RSI_EXTREME_HIGH = 78
 RSI_STRONG_HIGH  = 72
 RSI_EXTREME_LOW  = 22
 RSI_STRONG_LOW   = 28
+RSI_OVERBOUGHT   = 70
+RSI_OVERSOLD     = 30
+RSI_NEUTRAL_LOW  = 45
+RSI_NEUTRAL_HIGH = 55
 BB_PERIOD        = 20
 BB_STD           = 2.0
 ROC_PERIOD       = 5
+EMA_FAST_OLD     = 9   # old value — unused
+EMA_SLOW_OLD     = 21
+ATR_PERIOD       = 14
+MIN_CANDLES      = 30
 PAIR_COOLDOWN_SECS = 180
-
-# Backward compat
-RSI_OVERBOUGHT      = 70
-RSI_OVERSOLD        = 30
-RSI_NEUTRAL_LOW     = 45
-RSI_NEUTRAL_HIGH    = 55
-MACD_FAST           = 12
-MACD_SLOW           = 26
-MACD_SIGNAL         = 9
-EMA_FAST            = 9
-EMA_SLOW            = 21
-ATR_PERIOD          = 14
-MIN_CANDLES         = 30
 
 CONFIDENCE = {
     "full_trade": 83,
@@ -126,7 +151,7 @@ KELLY_SAFETY_FACTOR    = 0.25
 MAX_CONCURRENT_TRADES  = 1
 
 # ─────────────────────────────────────────────────
-# REMOVED IN AO-2.0 — kept to avoid import errors
+# REMOVED — kept to avoid import errors
 # ─────────────────────────────────────────────────
 GROQ_MIN_CONFIDENCE     = 83
 MIN_INDICATORS_AGREE    = 4
@@ -181,13 +206,14 @@ def validate_config():
 if __name__ == "__main__":
     print(f"\n{SYMBOL} {BOT_NAME} v{VERSION}")
     print(f"'{MOTTO}'")
-    print(f"\nMode:               {TRADE_MODE}")
+    print(f"\nStrategy:           TREND FOLLOWING (AO-2.5)")
+    print(f"Mode:               {TRADE_MODE}")
     print(f"Pairs:              {SYNTHETIC_PAIRS}")
-    print(f"Live Trade Score:   {MIN_SCORE}/12 (75%+)")
+    print(f"EMA:                {EMA_FAST}/{EMA_SLOW} | Threshold: {EMA_DIFF_THRESHOLD*100:.2f}%")
+    print(f"Live Trade Score:   {MIN_SCORE}/12")
     print(f"Phantom Score:      {PHANTOM_MIN_SCORE}/12 (shadow only)")
     print(f"Max Trades:         {MAX_DAILY_TRADES}/day")
     print(f"Daily Target:       ${DAILY_PROFIT_TARGET}")
     print(f"Daily Loss Limit:   {DAILY_LOSS_LIMIT}%")
     print(f"Stake:              {STAKE_PERCENT}% per trade")
     print(f"Expiry:             {EXPIRY_DEFAULT}min default, {EXPIRY_HIGH_CONF}min high-conf")
-    print(f"Consec. Loss Pause: {CONSECUTIVE_LOSS_PAUSE // 60} minutes")

@@ -1,13 +1,15 @@
-# ⚡ APEX ORACLE — AO-2.4
-# Main Orchestrator — REBUILT
+# ⚡ APEX ORACLE — AO-2.5
+# Main Orchestrator — TREND FOLLOWING REBUILD
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
-# CHANGES FROM AO-2.3:
-# - MTF EMA trend filter REPLACED with 1M reversal
-#   confirmation — compatible with mean reversion
-# - Score gate enforced: 9+ = live, 7-8 = phantom
-# - PHANTOM action from confluence now shadow-logged
-#   automatically without firing a real trade
+# CHANGES FROM AO-2.4:
+# - Strategy: MEAN REVERSION → TREND FOLLOWING
+# - process_signal now fetches 3m, 5m, 10m, 1m candles
+#   and passes them all to calculate_confluence
+# - 1M confirmation replaced with pullback-resume check
+#   (now handled INSIDE confluence engine, not here)
+# - Score gate: 10+/12 = live, 8-9 = phantom
+# - VERSION bumped to AO-2.5
 # ─────────────────────────────────────────────────
 
 import os
@@ -99,136 +101,43 @@ bot_state = {
 }
 
 # ─────────────────────────────────────────────────
-# 1M REVERSAL CONFIRMATION ENGINE — AO-2.4
+# SIGNAL PROCESSOR — AO-2.5
 #
-# PURPOSE: Confirm the mean reversion has already
-# started on the fastest timeframe before committing
-# real money on a 3-minute trade.
-#
-# WHY NOT EMA TREND AGREEMENT:
-# Our confluence engine is MEAN REVERSION — it fires
-# when price is at an extreme and just flipped.
-# Requiring 15M/5M EMAs to agree with the reversal
-# direction is impossible — the trend that CAUSED
-# the extreme hasn't reversed on those TFs yet.
-# That filter was blocking our best setups.
-#
-# NEW RULE (AO-2.4):
-# For a PUT signal — confirm on 1M that either:
-#   (a) EMA10 has crossed below EMA21, OR
-#   (b) Last 2 candles are both bearish (down momentum)
-# For a CALL signal — mirror logic (bullish).
-#
-# This is REVERSAL CONFIRMATION, not trend agreement.
-# It only asks: "has the turn already started?"
-# ─────────────────────────────────────────────────
-
-def _calc_ema(closes: list, period: int) -> float:
-    """EMA from list of closes, returns last value."""
-    k   = 2 / (period + 1)
-    ema = closes[0]
-    for price in closes[1:]:
-        ema = price * k + ema * (1 - k)
-    return ema
-
-
-def get_reversal_confirmation(pair: str, signal_direction: str) -> tuple:
-    """
-    AO-2.4 Reversal Confirmation — 1M timeframe.
-
-    For PUT: EMA10 < EMA21 on 1M, OR last 2 closes falling.
-    For CALL: EMA10 > EMA21 on 1M, OR last 2 closes rising.
-
-    One of the two conditions is enough — we don't need both.
-    This keeps it sensitive enough to catch early reversals.
-
-    Returns: (confirmed: bool, reason: str)
-    """
-    try:
-        candles_1m = get_candles(pair, 1, 30)
-
-        if not candles_1m or len(candles_1m) < 5:
-            # Not enough 1M data — default approve so bot doesn't freeze
-            logger.warning(f"⚠️ 1M confirm: not enough candles for {pair} — defaulting approved")
-            return True, "1M confirm: insufficient data — defaulted approved"
-
-        closes = [
-            float(c.get("close", c.get("Close", 0)))
-            for c in candles_1m
-            if c.get("close", c.get("Close", 0)) != 0
-        ]
-
-        if len(closes) < 5:
-            return True, "1M confirm: insufficient closes — defaulted approved"
-
-        ema10 = _calc_ema(closes, 10) if len(closes) >= 10 else None
-        ema21 = _calc_ema(closes, 21) if len(closes) >= 21 else None
-
-        last_close  = closes[-1]
-        prev_close  = closes[-2]
-        prev2_close = closes[-3]
-
-        if signal_direction == "PUT":
-            # Condition A: EMA10 crossed below EMA21 on 1M
-            ema_crossed_down = (ema10 is not None and ema21 is not None and ema10 < ema21)
-            # Condition B: Last 2 candles both bearish
-            momentum_down = (last_close < prev_close) and (prev_close < prev2_close)
-
-            confirmed = ema_crossed_down or momentum_down
-
-            reason = (
-                f"1M PUT confirm | "
-                f"EMA10={'%.4f' % ema10 if ema10 else 'N/A'} "
-                f"EMA21={'%.4f' % ema21 if ema21 else 'N/A'} | "
-                f"EMA_cross_down={ema_crossed_down} | "
-                f"Momentum_down={momentum_down} | "
-                f"{'✅ CONFIRMED' if confirmed else '❌ NOT confirmed'}"
-            )
-
-        else:  # CALL
-            # Condition A: EMA10 crossed above EMA21 on 1M
-            ema_crossed_up = (ema10 is not None and ema21 is not None and ema10 > ema21)
-            # Condition B: Last 2 candles both bullish
-            momentum_up = (last_close > prev_close) and (prev_close > prev2_close)
-
-            confirmed = ema_crossed_up or momentum_up
-
-            reason = (
-                f"1M CALL confirm | "
-                f"EMA10={'%.4f' % ema10 if ema10 else 'N/A'} "
-                f"EMA21={'%.4f' % ema21 if ema21 else 'N/A'} | "
-                f"EMA_cross_up={ema_crossed_up} | "
-                f"Momentum_up={momentum_up} | "
-                f"{'✅ CONFIRMED' if confirmed else '❌ NOT confirmed'}"
-            )
-
-        logger.info(f"🕯️ {reason}")
-        return confirmed, reason
-
-    except Exception as e:
-        logger.error(f"❌ 1M reversal confirm error: {e}")
-        return True, f"1M confirm error — defaulted approved: {e}"
-
-
-# ─────────────────────────────────────────────────
-# SIGNAL PROCESSOR — AO-2.4
+# KEY CHANGE: We now fetch ALL 4 timeframes here
+# and pass them into confluence as candles_by_tf.
+# The confluence engine does all the scoring.
+# No separate 1M reversal check needed anymore —
+# pullback-resume logic lives inside confluence.py.
 # ─────────────────────────────────────────────────
 
 def process_signal(pair: str) -> dict:
     """
-    AO-2.4 Signal Pipeline:
-    1. Fetch 5min candles
-    2. Run mean reversion scoring engine
-    3. If score 7-8 → phantom log, no real trade
-    4. If score 9+ → 1M reversal confirmation check
-    5. Return decision
+    AO-2.5 Signal Pipeline:
+    1. Fetch 5min candles (primary)
+    2. Fetch 3min, 10min, 1min candles (for MTF + pullback)
+    3. Pass ALL to calculate_confluence
+    4. Confluence handles: TF alignment, EMA strength,
+       pullback-resume, RSI brake, MACD — scores out of 12
+    5. Return TRADE / PHANTOM / SKIP decision
     """
     try:
-        candles = get_candles(pair, 5, 100)
-        if not candles or len(candles) < 30:
-            return {"action": "SKIP", "reason": "Not enough candle data"}
+        # ── Fetch all timeframes ───────────────────
+        candles_5m  = get_candles(pair, 5,  config.CANDLES_TREND_TF)
+        candles_3m  = get_candles(pair, 3,  config.CANDLES_TREND_TF)
+        candles_10m = get_candles(pair, 10, config.CANDLES_TREND_TF)
+        candles_1m  = get_candles(pair, 1,  config.CANDLES_ENTRY_TF)
 
-        result = calculate_confluence(candles, {}, pair)
+        if not candles_5m or len(candles_5m) < 30:
+            return {"action": "SKIP", "reason": "Not enough 5min candle data"}
+
+        candles_by_tf = {
+            "3m":  candles_3m,
+            "10m": candles_10m,
+            "1m":  candles_1m,
+        }
+
+        # ── Run confluence engine ──────────────────
+        result = calculate_confluence(candles_5m, candles_by_tf, pair)
 
         log_signal({
             "pair":        pair,
@@ -246,12 +155,11 @@ def process_signal(pair: str) -> dict:
         }
         update_status("last_signal", bot_state["last_signal"])
 
-        # ── Hard skip ─────────────────────────────
+        # ── Hard skip ──────────────────────────────
         if result["action"] == "SKIP":
             return {"action": "SKIP", "reason": result.get("reason", "No signal")}
 
-        # ── Phantom only (score 7-8) ───────────────
-        # Shadow log it but do not fire real trade
+        # ── Phantom only ───────────────────────────
         if result["action"] == "PHANTOM":
             logger.info(
                 f"👻 PHANTOM LOG: {pair} {result['direction']} | "
@@ -259,24 +167,12 @@ def process_signal(pair: str) -> dict:
             )
             return {
                 "action": "SKIP",
-                "reason": f"Score {result['score']}/12 — phantom only, need 9+ for live",
+                "reason": f"Score {result['score']}/12 — phantom only, need {config.MIN_SCORE}+ for live",
             }
 
-        # ── Score 9+ — run 1M reversal confirmation
-        signal_direction = result["direction"]
-        confirmed, confirm_reason = get_reversal_confirmation(pair, signal_direction)
-
-        if not confirmed:
-            logger.info(
-                f"🕯️ 1M confirm BLOCKED: {pair} {signal_direction} | {confirm_reason}"
-            )
-            return {
-                "action": "SKIP",
-                "reason": f"1M reversal not confirmed: {confirm_reason}",
-            }
-
-        score = result.get("score", 9)
-        expiry = config.EXPIRY_HIGH_CONF if score >= 10 else config.EXPIRY_DEFAULT
+        # ── Score 10+ — TRADE ──────────────────────
+        score  = result.get("score", 10)
+        expiry = config.EXPIRY_HIGH_CONF if score >= 11 else config.EXPIRY_DEFAULT
 
         return {
             "action":     "TRADE",
@@ -285,9 +181,9 @@ def process_signal(pair: str) -> dict:
             "score":      score,
             "pair":       pair,
             "stake_size": result["stake_size"],
-            "pattern":    result.get("pattern", "MEAN_REVERSION"),
+            "pattern":    result.get("pattern", "TREND_FOLLOWING"),
             "expiry":     expiry,
-            "confirm":    confirm_reason,
+            "confirm":    result.get("reason", ""),
         }
 
     except Exception as e:
@@ -339,7 +235,7 @@ def execute_trade(signal: dict) -> bool:
             "stake":       stake,
             "expiry":      expiry,
             "confidence":  signal["confidence"],
-            "pattern":     signal.get("pattern", "MEAN_REVERSION"),
+            "pattern":     signal.get("pattern", "TREND_FOLLOWING"),
             "mode":        bot_state["mode"],
             "entry_price": 0.0,
         }))
@@ -388,7 +284,7 @@ def execute_trade(signal: dict) -> bool:
                     "result":          outcome,
                     "profit_loss":     profit,
                     "balance_after":   new_bal,
-                    "pattern":         signal.get("pattern", "MEAN_REVERSION"),
+                    "pattern":         signal.get("pattern", "TREND_FOLLOWING"),
                     "sentiment_score": 0,
                     "groq_reasoning":  (
                         f"Score={signal.get('score', 0)}/12 | "
@@ -441,24 +337,24 @@ def run_daily_tasks():
 
 
 # ─────────────────────────────────────────────────
-# MAIN TRADING LOOP — AO-2.4
+# MAIN TRADING LOOP — AO-2.5
 # ─────────────────────────────────────────────────
 
 def trading_loop():
     """
-    AO-2.4 Main Loop — every 30 seconds:
+    AO-2.5 Main Loop — every 30 seconds:
     1. Phantom gate — hour check, cooldown, daily target
     2. Global risk rules
     3. Per-pair cooldowns
-    4. Confluence scoring (5M candles)
-    5. Score gate: 9+ → 1M reversal confirm → trade
-                  7-8 → phantom log only
-                  <7  → skip
+    4. Fetch 4 TFs, run confluence (trend-following engine)
+    5. Score gate: 10+ → trade | 8-9 → phantom | <8 → skip
     6. Execute if all gates clear
     """
-    logger.info("⚡ AO-2.4 Trading loop started!")
+    logger.info("⚡ AO-2.5 Trading loop started!")
     logger.info("👻 PHANTOM MODE active")
-    logger.info("🕯️ 1M REVERSAL CONFIRMATION active — replaces EMA trend filter")
+    logger.info("📈 TREND FOLLOWING ENGINE active — EMA8/21 on 3m/5m/10m, 0.07% threshold")
+    logger.info("🕯️ PULLBACK-RESUME entry — 1min RSI dip then resume")
+    logger.info("🛑 RSI BRAKE active — skips if entry already extreme")
     bot_state["running"] = True
     update_status("running", True)
 
@@ -594,17 +490,20 @@ def startup():
 
     logger.success("=" * 50)
     logger.success(f"✅ {config.BOT_NAME} v{config.VERSION} ONLINE!")
-    logger.success(f"💰 Balance:          ${balance:.2f}")
-    logger.success(f"📊 Mode:             {mode}")
-    logger.success(f"🎯 Live Score:       {config.MIN_SCORE}/12+ to trade real money")
-    logger.success(f"👻 Phantom Score:    {config.PHANTOM_MIN_SCORE}-{config.MIN_SCORE - 1}/12 shadow only")
-    logger.success(f"💱 Pairs:            {', '.join(ACTIVE_PAIRS)}")
-    logger.success(f"⏱️  Expiry:           {config.EXPIRY_DEFAULT}min / {config.EXPIRY_HIGH_CONF}min")
-    logger.success(f"🔒 Daily target:     ${config.DAILY_PROFIT_TARGET}")
-    logger.success(f"🛡️  Daily loss:       {config.DAILY_LOSS_LIMIT}%")
-    logger.success(f"👻 Phantom target:   {ps['daily_target']} trades today")
-    logger.success(f"🕯️  1M Confirm:       EMA cross OR 2-candle momentum")
-    logger.success(f"🚫 EMA trend filter: REMOVED — was killing reversals")
+    logger.success(f"💰 Balance:            ${balance:.2f}")
+    logger.success(f"📊 Mode:               {mode}")
+    logger.success(f"📈 Strategy:           TREND FOLLOWING")
+    logger.success(f"📐 TF Alignment:       3m / 5m / 10m EMA{config.EMA_FAST}/{config.EMA_SLOW}")
+    logger.success(f"📏 EMA Threshold:      {config.EMA_DIFF_THRESHOLD*100:.2f}% minimum diff")
+    logger.success(f"🎯 Live Score:         {config.MIN_SCORE}/12+ to trade real money")
+    logger.success(f"👻 Phantom Score:      {config.PHANTOM_MIN_SCORE}-{config.MIN_SCORE-1}/12 shadow only")
+    logger.success(f"🕯️  Entry:              Pullback-resume on 1min RSI")
+    logger.success(f"🛑 RSI Brake:          Skip if RSI >{config.RSI_BRAKE_HIGH} (CALL) or <{config.RSI_BRAKE_LOW} (PUT)")
+    logger.success(f"💱 Pairs:              {', '.join(ACTIVE_PAIRS)}")
+    logger.success(f"⏱️  Expiry:             {config.EXPIRY_DEFAULT}min default / {config.EXPIRY_HIGH_CONF}min high-conf")
+    logger.success(f"🔒 Daily target:       ${config.DAILY_PROFIT_TARGET}")
+    logger.success(f"🛡️  Daily loss:         {config.DAILY_LOSS_LIMIT}%")
+    logger.success(f"👻 Phantom target:     {ps['daily_target']} trades today")
     logger.success("=" * 50)
 
     return telegram_app
