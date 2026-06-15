@@ -9,11 +9,12 @@
 # - Price manipulation guard REMOVED (no Yahoo data for synthetics)
 # - Per-pair cooldown ADDED (120s between trades on same pair)
 # - Daily profit target ADDED (lock gains at $30)
-# - Expiry now 1min default, 3min for high score
+# - Expiry now 3min default, 5min for high score
 # - V100 removed from pair list
 # - Concurrent trade tracking ADDED
 # - PHANTOM MODE ADDED (AO-2.0) — anti-detection engine
 # - DAILY BIAS FILTER ADDED (AO-2.1) — trade with the trend
+# - MTF BIAS FILTER UPGRADED (AO-2.2) — 1H + 15M + 5M confirmation
 # ─────────────────────────────────────────────────
 
 import os
@@ -114,96 +115,162 @@ bot_state = {
 }
 
 # ─────────────────────────────────────────────────
-# DAILY BIAS ENGINE — AO-2.1
-# Detects whether V10/V25 is trending UP or DOWN
-# today using the 1-hour candles.
-# CALL signals are only taken in an UP bias day.
-# PUT signals are only taken in a DOWN bias day.
+# MTF BIAS ENGINE — AO-2.2
+# Multi-Timeframe confirmation aligned to our
+# 3-5 minute trade duration.
+#
+# 3 layers checked per signal:
+#   1H  — overall day direction (big picture)
+#   15M — medium term momentum (is move still going?)
+#   5M  — immediate entry context (right now)
+#
+# Rule: at least 2 out of 3 timeframes must agree
+# with the signal direction before a trade fires.
+#
+# 1H bias is cached all day (only fetched once).
+# 15M and 5M are fetched fresh on every signal
+# because they change frequently.
 # ─────────────────────────────────────────────────
 
 _bias_cache = {
-    "date":  None,
-    "bias":  None,   # "UP", "DOWN", or "NEUTRAL"
+    "date": None,
+    "1h":   None,   # cached all day
 }
 
-def get_daily_bias(pair: str = "V10") -> str:
-    """
-    Fetch 1-hour candles and determine today's
-    directional bias using a simple but effective method:
-    - Calculate EMA10 and EMA21 on 1H closes
-    - If EMA10 > EMA21 → UP bias (favour CALLs)
-    - If EMA10 < EMA21 → DOWN bias (favour PUTs)
-    - If within 0.05% of each other → NEUTRAL (trade both)
-    Cache the result for the full day to avoid
-    repeated API calls.
-    """
-    today = datetime.now().date()
+def _calc_ema(closes: list, period: int) -> float:
+    """Calculate EMA and return only the last value."""
+    k = 2 / (period + 1)
+    ema = closes[0]
+    for price in closes[1:]:
+        ema = price * k + ema * (1 - k)
+    return ema
 
-    # Return cached bias if already calculated today
-    if _bias_cache["date"] == today and _bias_cache["bias"] is not None:
-        return _bias_cache["bias"]
+def _get_bias_from_candles(candles: list, label: str) -> str:
+    """
+    Given a list of candles, return UP / DOWN / NEUTRAL
+    based on EMA10 vs EMA21 relationship.
+    """
+    if not candles or len(candles) < 21:
+        logger.warning(f"⚠️ MTF: not enough candles for {label} — NEUTRAL")
+        return "NEUTRAL"
 
+    closes = [
+        float(c.get("close", c.get("Close", 0)))
+        for c in candles
+        if c.get("close", c.get("Close", 0)) != 0
+    ]
+
+    if len(closes) < 21:
+        return "NEUTRAL"
+
+    ema10 = _calc_ema(closes, 10)
+    ema21 = _calc_ema(closes, 21)
+
+    diff_pct = abs(ema10 - ema21) / ema21 * 100
+
+    if diff_pct < 0.05:
+        bias = "NEUTRAL"
+    elif ema10 > ema21:
+        bias = "UP"
+    else:
+        bias = "DOWN"
+
+    logger.info(
+        f"📊 MTF {label}: {bias} | "
+        f"EMA10={ema10:.4f} EMA21={ema21:.4f} | "
+        f"Diff={diff_pct:.3f}%"
+    )
+    return bias
+
+def get_mtf_bias(pair: str, signal_direction: str) -> tuple[bool, str]:
+    """
+    Multi-Timeframe Bias Check — AO-2.2
+
+    Checks 1H (cached), 15M (fresh), 5M (fresh).
+    Requires at least 2 out of 3 to agree with
+    the signal direction before approving.
+
+    Returns:
+        (approved: bool, reason: str)
+    """
     try:
-        # Fetch 50 x 1-hour candles
-        candles = get_candles(pair, 60, 50)
-        if not candles or len(candles) < 21:
-            logger.warning("⚠️ Daily bias: not enough 1H candles — defaulting NEUTRAL")
-            return "NEUTRAL"
+        today = datetime.now().date()
 
-        closes = np.array([
-            float(c.get("close", c.get("Close", 0)))
-            for c in candles
-            if c.get("close", c.get("Close", 0)) != 0
-        ])
-
-        if len(closes) < 21:
-            return "NEUTRAL"
-
-        # EMA calculation
-        def ema(data, period):
-            k = 2 / (period + 1)
-            result = [data[0]]
-            for price in data[1:]:
-                result.append(price * k + result[-1] * (1 - k))
-            return result
-
-        ema10 = ema(closes.tolist(), 10)[-1]
-        ema21 = ema(closes.tolist(), 21)[-1]
-
-        diff_pct = abs(ema10 - ema21) / ema21 * 100
-
-        if diff_pct < 0.05:
-            bias = "NEUTRAL"
-        elif ema10 > ema21:
-            bias = "UP"
+        # ── 1H bias — fetch once per day ─────────
+        if _bias_cache["date"] != today or _bias_cache["1h"] is None:
+            candles_1h = get_candles(pair, 60, 50)
+            bias_1h = _get_bias_from_candles(candles_1h, "1H")
+            _bias_cache["date"] = today
+            _bias_cache["1h"]   = bias_1h
         else:
-            bias = "DOWN"
+            bias_1h = _bias_cache["1h"]
 
-        _bias_cache["date"] = today
-        _bias_cache["bias"] = bias
+        # ── 15M bias — fresh every signal ────────
+        candles_15m = get_candles(pair, 15, 50)
+        bias_15m = _get_bias_from_candles(candles_15m, "15M")
 
-        logger.info(
-            f"📈 Daily Bias: {bias} | "
-            f"EMA10={ema10:.4f} EMA21={ema21:.4f} | "
-            f"Diff={diff_pct:.3f}%"
+        # ── 5M bias — fresh every signal ─────────
+        candles_5m = get_candles(pair, 5, 50)
+        bias_5m = _get_bias_from_candles(candles_5m, "5M")
+
+        # ── Count agreements ──────────────────────
+        # Map signal direction to what we're looking for
+        # CALL = we want UP biases
+        # PUT  = we want DOWN biases
+        target = "UP" if signal_direction == "CALL" else "DOWN"
+
+        votes = {
+            "1H":  bias_1h,
+            "15M": bias_15m,
+            "5M":  bias_5m,
+        }
+
+        agreements = sum(
+            1 for tf, b in votes.items()
+            if b == target
         )
-        return bias
+
+        # NEUTRAL counts as a half-agreement — doesn't
+        # block but doesn't fully support either
+        neutrals = sum(
+            1 for tf, b in votes.items()
+            if b == "NEUTRAL"
+        )
+
+        # Need at least 2 agreements out of 3
+        # A neutral on one TF with 1 agreement = not enough
+        # A neutral on one TF with 2 agreements = approved
+        approved = agreements >= 2
+
+        summary = (
+            f"1H={bias_1h} | 15M={bias_15m} | 5M={bias_5m} | "
+            f"Agreements={agreements}/3 for {signal_direction}"
+        )
+
+        if approved:
+            reason = f"✅ MTF approved ({agreements}/3 agree) | {summary}"
+        else:
+            reason = f"❌ MTF blocked ({agreements}/3 agree, need 2) | {summary}"
+
+        logger.info(f"🔭 MTF Check: {reason}")
+        return approved, reason
 
     except Exception as e:
-        logger.error(f"❌ Daily bias error: {e}")
-        return "NEUTRAL"
+        logger.error(f"❌ MTF bias error: {e}")
+        # On error — default to approved so bot doesn't freeze
+        return True, f"MTF error — defaulting to approved: {e}"
 
 
 # ─────────────────────────────────────────────────
-# SIGNAL PROCESSOR — AO-2.1
+# SIGNAL PROCESSOR — AO-2.2
 # ─────────────────────────────────────────────────
 
 def process_signal(pair: str) -> dict:
     """
-    AO-2.1 Signal Pipeline:
+    AO-2.2 Signal Pipeline:
     1. Fetch 5min candles
     2. Run mean reversion scoring engine
-    3. Check signal against daily bias filter
+    3. MTF bias check — 1H + 15M + 5M (2/3 must agree)
     4. Return decision
     """
     try:
@@ -232,28 +299,16 @@ def process_signal(pair: str) -> dict:
         if result["action"] != "TRADE":
             return {"action": "SKIP", "reason": result.get("reason", "No signal")}
 
-        # ── Daily Bias Filter ─────────────────────
-        # Only trade with the trend. Never against it.
-        signal_direction = result["direction"]  # "CALL" or "PUT"
-        daily_bias = get_daily_bias(pair)
+        # ── MTF Bias Filter ───────────────────────
+        # 1H + 15M + 5M must agree 2 out of 3
+        signal_direction = result["direction"]
+        mtf_approved, mtf_reason = get_mtf_bias(pair, signal_direction)
 
-        if daily_bias == "UP" and signal_direction == "PUT":
+        if not mtf_approved:
             return {
                 "action": "SKIP",
-                "reason": f"Bias filter: UP day — skipping PUT on {pair}",
+                "reason": f"MTF filter blocked: {mtf_reason}",
             }
-
-        if daily_bias == "DOWN" and signal_direction == "CALL":
-            return {
-                "action": "SKIP",
-                "reason": f"Bias filter: DOWN day — skipping CALL on {pair}",
-            }
-
-        # NEUTRAL — allow both directions
-        logger.info(
-            f"✅ Bias filter PASSED: {signal_direction} on "
-            f"{pair} | Daily bias: {daily_bias}"
-        )
         # ─────────────────────────────────────────
 
         score = result.get("score", 7)
@@ -271,6 +326,7 @@ def process_signal(pair: str) -> dict:
             "stake_size": result["stake_size"],
             "pattern":    result.get("pattern", "MEAN_REVERSION"),
             "expiry":     expiry,
+            "mtf":        mtf_reason,
         }
 
     except Exception as e:
@@ -376,7 +432,7 @@ def execute_trade(signal: dict) -> bool:
                     "balance_after":   new_bal,
                     "pattern":         signal.get("pattern", "MEAN_REVERSION"),
                     "sentiment_score": 0,
-                    "groq_reasoning":  f"Score={signal.get('score', 0)}/12 | Bias={_bias_cache.get('bias', 'N/A')}",
+                    "groq_reasoning":  f"Score={signal.get('score', 0)}/12 | {signal.get('mtf', 'N/A')}",
                     "mode":            bot_state["mode"],
                 })
 
@@ -424,22 +480,22 @@ def run_daily_tasks():
 
 
 # ─────────────────────────────────────────────────
-# MAIN TRADING LOOP — AO-2.1 + PHANTOM MODE
+# MAIN TRADING LOOP — AO-2.2 + PHANTOM MODE
 # ─────────────────────────────────────────────────
 
 def trading_loop():
     """
-    AO-2.1 Main Loop — every 30 seconds:
+    AO-2.2 Main Loop — every 30 seconds:
     1. Phantom Mode gate — hour check, cooldown, daily target
     2. Check global risk rules
     3. Check per-pair cooldowns
     4. Run scoring engine on each pair
-    5. Apply daily bias filter
+    5. MTF bias filter — 1H + 15M + 5M (2/3 must agree)
     6. Execute only if all gates clear
     """
-    logger.info("⚡ AO-2.1 Trading loop started!")
+    logger.info("⚡ AO-2.2 Trading loop started!")
     logger.info("👻 PHANTOM MODE active — anti-detection enabled")
-    logger.info("📈 DAILY BIAS FILTER active — trend is your friend")
+    logger.info("🔭 MTF BIAS FILTER active — 1H + 15M + 5M confirmation")
     bot_state["running"] = True
     update_status("running", True)
 
@@ -504,7 +560,7 @@ def trading_loop():
                     f"Balance: ${balance:.2f} | "
                     f"Trades today: {bot_state['trades_today']}/{config.MAX_DAILY_TRADES} | "
                     f"Phantom: {phantom.trade_count}/{phantom.daily_target} | "
-                    f"Bias: {_bias_cache.get('bias', 'UNKNOWN')}"
+                    f"1H Bias: {_bias_cache.get('1h', 'UNKNOWN')}"
                 )
 
                 signal = process_signal(pair)
@@ -518,10 +574,10 @@ def trading_loop():
                         continue
 
                     logger.info(
-                        f"🚀 SIGNAL: {pair} {signal['direction']} | "
+                        f"🚀 SIGNAL APPROVED: {pair} {signal['direction']} | "
                         f"Score={signal.get('score')}/12 | "
                         f"Expiry={signal.get('expiry')}min | "
-                        f"Bias={_bias_cache.get('bias', 'N/A')}"
+                        f"MTF={signal.get('mtf', 'N/A')}"
                     )
                     if execute_trade(signal):
                         trade_placed = True
@@ -582,11 +638,14 @@ def startup():
 
     asyncio.run(send_startup_report(balance, mode))
 
-    # ⚡ Log Phantom status on startup
+    # ⚡ Phantom status
     ps = phantom.get_status()
 
-    # 📈 Pre-calculate today's bias on startup
-    startup_bias = get_daily_bias("V10")
+    # 🔭 Pre-fetch 1H bias on startup
+    candles_1h = get_candles("V10", 60, 50)
+    startup_bias = _get_bias_from_candles(candles_1h, "1H")
+    _bias_cache["date"] = datetime.now().date()
+    _bias_cache["1h"]   = startup_bias
 
     logger.success("=" * 50)
     logger.success(f"✅ {config.BOT_NAME} v{config.VERSION} ONLINE!")
@@ -599,7 +658,7 @@ def startup():
     logger.success(f"🛡️  Daily loss:     {config.DAILY_LOSS_LIMIT}% then STOP")
     logger.success(f"👻 Phantom target: {ps['daily_target']} trades today")
     logger.success(f"👻 Phantom bursts: hours {ps['burst_hours']}")
-    logger.success(f"📈 Daily bias:     {startup_bias} — trading with the trend")
+    logger.success(f"🔭 MTF 1H bias:    {startup_bias} — 15M + 5M checked per signal")
     logger.success(f"🚫 Groq AI:        DISABLED (AO-2.0)")
     logger.success(f"🚫 V100:           EXCLUDED (too noisy)")
     logger.success("=" * 50)
