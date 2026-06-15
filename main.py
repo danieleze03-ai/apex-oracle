@@ -1,20 +1,13 @@
-# ⚡ APEX ORACLE — AO-2.0
+# ⚡ APEX ORACLE — AO-2.4
 # Main Orchestrator — REBUILT
 # "We Don't Predict. We Know."
 # ─────────────────────────────────────────────────
-# CHANGES FROM AO-1.0:
-# - Groq AI gate REMOVED (was slow and not functional)
-# - Candle patterns REMOVED (unreliable on synthetics)
-# - Sentiment/news check REMOVED (irrelevant on synthetics)
-# - Price manipulation guard REMOVED (no Yahoo data for synthetics)
-# - Per-pair cooldown ADDED (120s between trades on same pair)
-# - Daily profit target ADDED (lock gains at $30)
-# - Expiry now 3min default, 5min for high score
-# - V100 removed from pair list
-# - Concurrent trade tracking ADDED
-# - PHANTOM MODE ADDED (AO-2.0) — anti-detection engine
-# - DAILY BIAS FILTER ADDED (AO-2.1) — trade with the trend
-# - MTF BIAS FILTER UPGRADED (AO-2.3) — 15M + 5M must both agree
+# CHANGES FROM AO-2.3:
+# - MTF EMA trend filter REPLACED with 1M reversal
+#   confirmation — compatible with mean reversion
+# - Score gate enforced: 9+ = live, 7-8 = phantom
+# - PHANTOM action from confluence now shadow-logged
+#   automatically without firing a real trade
 # ─────────────────────────────────────────────────
 
 import os
@@ -34,9 +27,8 @@ load_dotenv()
 
 from core.logger import setup_logger
 from core.confluence import calculate_confluence
-from core.phantom import phantom                    # ⚡ PHANTOM MODE
+from core.phantom import phantom
 
-# Broker
 from broker.deriv import (
     connect, disconnect, reconnect,
     get_balance, get_candles,
@@ -45,7 +37,6 @@ from broker.deriv import (
     is_connected,
 )
 
-# Management
 from management.risk import (
     can_trade, can_trade_pair,
     calculate_stake,
@@ -56,11 +47,8 @@ from management.risk import (
     pause_trading, resume_trading,
     emergency_shutdown,
 )
-from management.session import (
-    get_optimal_expiry,
-)
+from management.session import get_optimal_expiry
 
-# Communication
 from communication.telegram import (
     start_telegram_bot,
     send_alert, send_alert_sync,
@@ -75,7 +63,6 @@ from communication.reports import (
     send_shutdown_alert,
 )
 
-# Data
 from data.database import (
     log_trade, log_signal,
     update_daily_performance,
@@ -83,15 +70,12 @@ from data.database import (
 )
 from data.backup import run_weekly_backup, should_run_backup
 
-# Server
 from server.keep_alive import start_keep_alive, update_status
 
-# Config
 import config
 
 # ─────────────────────────────────────────────────
-# PAIR LIST — AO-2.0
-# V100 removed. V25 and V10 lead (best oscillation)
+# PAIR LIST
 # ─────────────────────────────────────────────────
 
 ACTIVE_PAIRS  = config.SYNTHETIC_PAIRS
@@ -115,129 +99,129 @@ bot_state = {
 }
 
 # ─────────────────────────────────────────────────
-# MTF BIAS ENGINE — AO-2.3
-# Multi-Timeframe confirmation aligned to our
-# 3-5 minute trade duration.
+# 1M REVERSAL CONFIRMATION ENGINE — AO-2.4
 #
-# 1H REMOVED — too far from our trade reality.
-# Our trades expire in 3-5 minutes. The 15M and
-# 5M timeframes live in the same world as our trades.
+# PURPOSE: Confirm the mean reversion has already
+# started on the fastest timeframe before committing
+# real money on a 3-minute trade.
 #
-# 2 layers checked per signal:
-#   15M — medium term momentum (is the move going?)
-#   5M  — immediate entry context (right now)
+# WHY NOT EMA TREND AGREEMENT:
+# Our confluence engine is MEAN REVERSION — it fires
+# when price is at an extreme and just flipped.
+# Requiring 15M/5M EMAs to agree with the reversal
+# direction is impossible — the trend that CAUSED
+# the extreme hasn't reversed on those TFs yet.
+# That filter was blocking our best setups.
 #
-# Rule: BOTH 15M and 5M must agree with the signal
-# direction before a trade fires. 2/2 required.
+# NEW RULE (AO-2.4):
+# For a PUT signal — confirm on 1M that either:
+#   (a) EMA10 has crossed below EMA21, OR
+#   (b) Last 2 candles are both bearish (down momentum)
+# For a CALL signal — mirror logic (bullish).
 #
-# If either is NEUTRAL — trade is blocked.
-# We only want clean, aligned setups.
+# This is REVERSAL CONFIRMATION, not trend agreement.
+# It only asks: "has the turn already started?"
 # ─────────────────────────────────────────────────
 
 def _calc_ema(closes: list, period: int) -> float:
-    """Calculate EMA and return only the last value."""
-    k = 2 / (period + 1)
+    """EMA from list of closes, returns last value."""
+    k   = 2 / (period + 1)
     ema = closes[0]
     for price in closes[1:]:
         ema = price * k + ema * (1 - k)
     return ema
 
-def _get_bias_from_candles(candles: list, label: str) -> str:
+
+def get_reversal_confirmation(pair: str, signal_direction: str) -> tuple:
     """
-    Given a list of candles, return UP / DOWN / NEUTRAL
-    based on EMA10 vs EMA21 relationship.
-    """
-    if not candles or len(candles) < 21:
-        logger.warning(f"⚠️ MTF: not enough candles for {label} — NEUTRAL")
-        return "NEUTRAL"
+    AO-2.4 Reversal Confirmation — 1M timeframe.
 
-    closes = [
-        float(c.get("close", c.get("Close", 0)))
-        for c in candles
-        if c.get("close", c.get("Close", 0)) != 0
-    ]
+    For PUT: EMA10 < EMA21 on 1M, OR last 2 closes falling.
+    For CALL: EMA10 > EMA21 on 1M, OR last 2 closes rising.
 
-    if len(closes) < 21:
-        return "NEUTRAL"
+    One of the two conditions is enough — we don't need both.
+    This keeps it sensitive enough to catch early reversals.
 
-    ema10 = _calc_ema(closes, 10)
-    ema21 = _calc_ema(closes, 21)
-
-    diff_pct = abs(ema10 - ema21) / ema21 * 100
-
-    if diff_pct < 0.05:
-        bias = "NEUTRAL"
-    elif ema10 > ema21:
-        bias = "UP"
-    else:
-        bias = "DOWN"
-
-    logger.info(
-        f"📊 MTF {label}: {bias} | "
-        f"EMA10={ema10:.4f} EMA21={ema21:.4f} | "
-        f"Diff={diff_pct:.3f}%"
-    )
-    return bias
-
-def get_mtf_bias(pair: str, signal_direction: str) -> tuple[bool, str]:
-    """
-    Multi-Timeframe Bias Check — AO-2.3
-
-    Checks 15M and 5M only — both fresh on every signal.
-    Both must agree with the signal direction.
-    1H removed — irrelevant to 3-5 minute trades.
-
-    CALL signal → both 15M and 5M must be UP
-    PUT signal  → both 15M and 5M must be DOWN
-
-    Returns:
-        (approved: bool, reason: str)
+    Returns: (confirmed: bool, reason: str)
     """
     try:
-        # ── 15M bias — fresh every signal ────────
-        candles_15m = get_candles(pair, 15, 50)
-        bias_15m = _get_bias_from_candles(candles_15m, "15M")
+        candles_1m = get_candles(pair, 1, 30)
 
-        # ── 5M bias — fresh every signal ─────────
-        candles_5m = get_candles(pair, 5, 50)
-        bias_5m = _get_bias_from_candles(candles_5m, "5M")
+        if not candles_1m or len(candles_1m) < 5:
+            # Not enough 1M data — default approve so bot doesn't freeze
+            logger.warning(f"⚠️ 1M confirm: not enough candles for {pair} — defaulting approved")
+            return True, "1M confirm: insufficient data — defaulted approved"
 
-        # ── Target direction ──────────────────────
-        target = "UP" if signal_direction == "CALL" else "DOWN"
+        closes = [
+            float(c.get("close", c.get("Close", 0)))
+            for c in candles_1m
+            if c.get("close", c.get("Close", 0)) != 0
+        ]
 
-        # ── Both must agree — 2/2 ─────────────────
-        both_agree = (bias_15m == target) and (bias_5m == target)
+        if len(closes) < 5:
+            return True, "1M confirm: insufficient closes — defaulted approved"
 
-        summary = (
-            f"15M={bias_15m} | 5M={bias_5m} | "
-            f"Need both={target} for {signal_direction}"
-        )
+        ema10 = _calc_ema(closes, 10) if len(closes) >= 10 else None
+        ema21 = _calc_ema(closes, 21) if len(closes) >= 21 else None
 
-        if both_agree:
-            reason = f"✅ MTF approved (2/2 agree) | {summary}"
-        else:
-            reason = f"❌ MTF blocked (not 2/2) | {summary}"
+        last_close  = closes[-1]
+        prev_close  = closes[-2]
+        prev2_close = closes[-3]
 
-        logger.info(f"🔭 MTF Check: {reason}")
-        return both_agree, reason
+        if signal_direction == "PUT":
+            # Condition A: EMA10 crossed below EMA21 on 1M
+            ema_crossed_down = (ema10 is not None and ema21 is not None and ema10 < ema21)
+            # Condition B: Last 2 candles both bearish
+            momentum_down = (last_close < prev_close) and (prev_close < prev2_close)
+
+            confirmed = ema_crossed_down or momentum_down
+
+            reason = (
+                f"1M PUT confirm | "
+                f"EMA10={'%.4f' % ema10 if ema10 else 'N/A'} "
+                f"EMA21={'%.4f' % ema21 if ema21 else 'N/A'} | "
+                f"EMA_cross_down={ema_crossed_down} | "
+                f"Momentum_down={momentum_down} | "
+                f"{'✅ CONFIRMED' if confirmed else '❌ NOT confirmed'}"
+            )
+
+        else:  # CALL
+            # Condition A: EMA10 crossed above EMA21 on 1M
+            ema_crossed_up = (ema10 is not None and ema21 is not None and ema10 > ema21)
+            # Condition B: Last 2 candles both bullish
+            momentum_up = (last_close > prev_close) and (prev_close > prev2_close)
+
+            confirmed = ema_crossed_up or momentum_up
+
+            reason = (
+                f"1M CALL confirm | "
+                f"EMA10={'%.4f' % ema10 if ema10 else 'N/A'} "
+                f"EMA21={'%.4f' % ema21 if ema21 else 'N/A'} | "
+                f"EMA_cross_up={ema_crossed_up} | "
+                f"Momentum_up={momentum_up} | "
+                f"{'✅ CONFIRMED' if confirmed else '❌ NOT confirmed'}"
+            )
+
+        logger.info(f"🕯️ {reason}")
+        return confirmed, reason
 
     except Exception as e:
-        logger.error(f"❌ MTF bias error: {e}")
-        # On error — default to approved so bot doesn't freeze
-        return True, f"MTF error — defaulting to approved: {e}"
+        logger.error(f"❌ 1M reversal confirm error: {e}")
+        return True, f"1M confirm error — defaulted approved: {e}"
 
 
 # ─────────────────────────────────────────────────
-# SIGNAL PROCESSOR — AO-2.3
+# SIGNAL PROCESSOR — AO-2.4
 # ─────────────────────────────────────────────────
 
 def process_signal(pair: str) -> dict:
     """
-    AO-2.3 Signal Pipeline:
+    AO-2.4 Signal Pipeline:
     1. Fetch 5min candles
     2. Run mean reversion scoring engine
-    3. MTF bias check — 15M + 5M must both agree
-    4. Return decision
+    3. If score 7-8 → phantom log, no real trade
+    4. If score 9+ → 1M reversal confirmation check
+    5. Return decision
     """
     try:
         candles = get_candles(pair, 5, 100)
@@ -262,26 +246,37 @@ def process_signal(pair: str) -> dict:
         }
         update_status("last_signal", bot_state["last_signal"])
 
-        if result["action"] != "TRADE":
+        # ── Hard skip ─────────────────────────────
+        if result["action"] == "SKIP":
             return {"action": "SKIP", "reason": result.get("reason", "No signal")}
 
-        # ── MTF Bias Filter ───────────────────────
-        # 15M + 5M must both agree — 2/2
-        signal_direction = result["direction"]
-        mtf_approved, mtf_reason = get_mtf_bias(pair, signal_direction)
-
-        if not mtf_approved:
+        # ── Phantom only (score 7-8) ───────────────
+        # Shadow log it but do not fire real trade
+        if result["action"] == "PHANTOM":
+            logger.info(
+                f"👻 PHANTOM LOG: {pair} {result['direction']} | "
+                f"Score={result['score']}/12 — no real trade"
+            )
             return {
                 "action": "SKIP",
-                "reason": f"MTF filter blocked: {mtf_reason}",
+                "reason": f"Score {result['score']}/12 — phantom only, need 9+ for live",
             }
-        # ─────────────────────────────────────────
 
-        score = result.get("score", 7)
-        if score >= 10:
-            expiry = config.EXPIRY_HIGH_CONF
-        else:
-            expiry = config.EXPIRY_DEFAULT
+        # ── Score 9+ — run 1M reversal confirmation
+        signal_direction = result["direction"]
+        confirmed, confirm_reason = get_reversal_confirmation(pair, signal_direction)
+
+        if not confirmed:
+            logger.info(
+                f"🕯️ 1M confirm BLOCKED: {pair} {signal_direction} | {confirm_reason}"
+            )
+            return {
+                "action": "SKIP",
+                "reason": f"1M reversal not confirmed: {confirm_reason}",
+            }
+
+        score = result.get("score", 9)
+        expiry = config.EXPIRY_HIGH_CONF if score >= 10 else config.EXPIRY_DEFAULT
 
         return {
             "action":     "TRADE",
@@ -292,7 +287,7 @@ def process_signal(pair: str) -> dict:
             "stake_size": result["stake_size"],
             "pattern":    result.get("pattern", "MEAN_REVERSION"),
             "expiry":     expiry,
-            "mtf":        mtf_reason,
+            "confirm":    confirm_reason,
         }
 
     except Exception as e:
@@ -307,7 +302,7 @@ def process_signal(pair: str) -> dict:
 # ─────────────────────────────────────────────────
 
 def execute_trade(signal: dict) -> bool:
-    """Execute trade and spawn background thread to watch result"""
+    """Execute trade and spawn background thread to watch result."""
     try:
         pair      = signal["pair"]
         direction = signal["direction"]
@@ -330,8 +325,7 @@ def execute_trade(signal: dict) -> bool:
 
         trade_result = place_trade(pair, direction, stake, expiry)
         if not trade_result["success"]:
-            error = trade_result.get("error", "unknown")
-            logger.error(f"❌ Trade failed: {error}")
+            logger.error(f"❌ Trade failed: {trade_result.get('error', 'unknown')}")
             return False
 
         trade_id = trade_result["trade_id"]
@@ -372,8 +366,6 @@ def execute_trade(signal: dict) -> bool:
                 new_bal = get_balance()
 
                 update_after_trade(outcome, profit)
-
-                # ⚡ PHANTOM — record trade completion
                 phantom.record_trade(result=outcome)
 
                 if outcome == "WIN":
@@ -398,8 +390,11 @@ def execute_trade(signal: dict) -> bool:
                     "balance_after":   new_bal,
                     "pattern":         signal.get("pattern", "MEAN_REVERSION"),
                     "sentiment_score": 0,
-                    "groq_reasoning":  f"Score={signal.get('score', 0)}/12 | {signal.get('mtf', 'N/A')}",
-                    "mode":            bot_state["mode"],
+                    "groq_reasoning":  (
+                        f"Score={signal.get('score', 0)}/12 | "
+                        f"{signal.get('confirm', 'N/A')}"
+                    ),
+                    "mode": bot_state["mode"],
                 })
 
                 asyncio.run(send_trade_result({
@@ -446,28 +441,29 @@ def run_daily_tasks():
 
 
 # ─────────────────────────────────────────────────
-# MAIN TRADING LOOP — AO-2.3 + PHANTOM MODE
+# MAIN TRADING LOOP — AO-2.4
 # ─────────────────────────────────────────────────
 
 def trading_loop():
     """
-    AO-2.3 Main Loop — every 30 seconds:
-    1. Phantom Mode gate — hour check, cooldown, daily target
-    2. Check global risk rules
-    3. Check per-pair cooldowns
-    4. Run scoring engine on each pair
-    5. MTF bias filter — 15M + 5M must both agree (2/2)
-    6. Execute only if all gates clear
+    AO-2.4 Main Loop — every 30 seconds:
+    1. Phantom gate — hour check, cooldown, daily target
+    2. Global risk rules
+    3. Per-pair cooldowns
+    4. Confluence scoring (5M candles)
+    5. Score gate: 9+ → 1M reversal confirm → trade
+                  7-8 → phantom log only
+                  <7  → skip
+    6. Execute if all gates clear
     """
-    logger.info("⚡ AO-2.3 Trading loop started!")
-    logger.info("👻 PHANTOM MODE active — anti-detection enabled")
-    logger.info("🔭 MTF BIAS FILTER active — 15M + 5M must both agree")
+    logger.info("⚡ AO-2.4 Trading loop started!")
+    logger.info("👻 PHANTOM MODE active")
+    logger.info("🕯️ 1M REVERSAL CONFIRMATION active — replaces EMA trend filter")
     bot_state["running"] = True
     update_status("running", True)
 
     while True:
         try:
-            # ── Get balance ───────────────────────
             balance = get_balance()
             if balance == 0.0:
                 logger.warning("⚠️ Balance = 0 — checking connection...")
@@ -482,7 +478,7 @@ def trading_loop():
             bot_state["balance"] = balance
             update_status("balance", balance)
 
-            # ── PHANTOM GATE — first check ────────
+            # ── Phantom gate ──────────────────────
             phantom_ok, phantom_reason = phantom.should_trade()
             if not phantom_ok:
                 logger.info(f"👻 PHANTOM: {phantom_reason}")
@@ -498,7 +494,7 @@ def trading_loop():
                 time.sleep(LOOP_INTERVAL)
                 continue
 
-            # ── Trade safety: stuck flag reset ────
+            # ── Stuck trade flag reset ────────────
             if bot_state.get("trade_active"):
                 last       = bot_state.get("last_trade", {})
                 trade_time = last.get("time", "")
@@ -531,18 +527,10 @@ def trading_loop():
                 signal = process_signal(pair)
 
                 if signal["action"] == "TRADE":
-                    if pair == "V75" and signal.get("score", 0) < config.V75_MIN_SCORE:
-                        logger.info(
-                            f"⏭️ V75 score {signal.get('score')}/12 "
-                            f"< {config.V75_MIN_SCORE} — skipping"
-                        )
-                        continue
-
                     logger.info(
                         f"🚀 SIGNAL APPROVED: {pair} {signal['direction']} | "
                         f"Score={signal.get('score')}/12 | "
-                        f"Expiry={signal.get('expiry')}min | "
-                        f"MTF={signal.get('mtf', 'N/A')}"
+                        f"Expiry={signal.get('expiry')}min"
                     )
                     if execute_trade(signal):
                         trade_placed = True
@@ -600,26 +588,23 @@ def startup():
     inject_dependencies(bot_state)
 
     telegram_app = start_telegram_bot()
-
     asyncio.run(send_startup_report(balance, mode))
 
-    # ⚡ Phantom status
     ps = phantom.get_status()
 
     logger.success("=" * 50)
     logger.success(f"✅ {config.BOT_NAME} v{config.VERSION} ONLINE!")
-    logger.success(f"💰 Balance:        ${balance:.2f}")
-    logger.success(f"📊 Mode:           {mode}")
-    logger.success(f"🎯 Min Score:      {config.MIN_SCORE}/12 to trade")
-    logger.success(f"💱 Pairs:          {', '.join(ACTIVE_PAIRS)}")
-    logger.success(f"⏱️  Expiry:         {config.EXPIRY_DEFAULT}min / {config.EXPIRY_HIGH_CONF}min")
-    logger.success(f"🔒 Daily target:   ${config.DAILY_PROFIT_TARGET} then STOP")
-    logger.success(f"🛡️  Daily loss:     {config.DAILY_LOSS_LIMIT}% then STOP")
-    logger.success(f"👻 Phantom target: {ps['daily_target']} trades today")
-    logger.success(f"👻 Phantom bursts: hours {ps['burst_hours']}")
-    logger.success(f"🔭 MTF filter:     15M + 5M must both agree (2/2)")
-    logger.success(f"🚫 Groq AI:        DISABLED (AO-2.0)")
-    logger.success(f"🚫 V100:           EXCLUDED (too noisy)")
+    logger.success(f"💰 Balance:          ${balance:.2f}")
+    logger.success(f"📊 Mode:             {mode}")
+    logger.success(f"🎯 Live Score:       {config.MIN_SCORE}/12+ to trade real money")
+    logger.success(f"👻 Phantom Score:    {config.PHANTOM_MIN_SCORE}-{config.MIN_SCORE - 1}/12 shadow only")
+    logger.success(f"💱 Pairs:            {', '.join(ACTIVE_PAIRS)}")
+    logger.success(f"⏱️  Expiry:           {config.EXPIRY_DEFAULT}min / {config.EXPIRY_HIGH_CONF}min")
+    logger.success(f"🔒 Daily target:     ${config.DAILY_PROFIT_TARGET}")
+    logger.success(f"🛡️  Daily loss:       {config.DAILY_LOSS_LIMIT}%")
+    logger.success(f"👻 Phantom target:   {ps['daily_target']} trades today")
+    logger.success(f"🕯️  1M Confirm:       EMA cross OR 2-candle momentum")
+    logger.success(f"🚫 EMA trend filter: REMOVED — was killing reversals")
     logger.success("=" * 50)
 
     return telegram_app
